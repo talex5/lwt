@@ -110,6 +110,13 @@ Library "optcomp"
   Modules: Pa_optcomp
   BuildDepends: camlp4, camlp4.quotations.o
 
+Library "lwt-tracing"
+  FindlibName: tracing
+  FindlibParent: lwt
+  Path: src/tracing
+  Modules: Lwt_tracing
+  XMETADescription: Tracing support
+
 Library "lwt"
   Path: src/core
   Modules:
@@ -124,6 +131,7 @@ Library "lwt"
     Lwt_switch,
     Lwt_util,
     Lwt_pqueue
+  BuildDepends: lwt.tracing
   XMETADescription: Lightweight thread library for OCaml (core library)
 
 Library "lwt-log"

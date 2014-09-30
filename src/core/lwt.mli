@@ -331,7 +331,7 @@ val on_cancel : 'a t -> (unit -> unit) -> unit
       If [f] raises an exception it is given to
       {!async_exception_hook}. *)
 
-val add_task_r : 'a u Lwt_sequence.t -> 'a t
+val add_task_r : ?thread_type:Lwt_tracing.thread_type -> 'a u Lwt_sequence.t -> 'a t
   (** [add_task_r seq] creates a sleeping thread, adds its wakener to
       the right of [seq] and returns its waiter. When the thread is
       canceled, it is removed from [seq]. *)
@@ -450,3 +450,6 @@ val backtrace_bind : (exn -> exn) -> 'a t -> ('a -> 'b t) -> 'b t
 val backtrace_catch : (exn -> exn) -> (unit -> 'a t) -> (exn -> 'a t) -> 'a t
 val backtrace_try_bind : (exn -> exn) -> (unit -> 'a t) -> ('a -> 'b t) -> (exn -> 'b t) -> 'b t
 val backtrace_finalize : (exn -> exn) -> (unit -> 'a t) -> (unit -> unit t) -> 'a t
+
+val id_of_thread : 'a t -> Lwt_tracing.thread_id
+val current_id : unit -> Lwt_tracing.thread_id

@@ -324,6 +324,7 @@ class virtual select_based = object(self)
     (* Compute the timeout. *)
     let timeout = if block then get_next_timeout sleep_queue else 0. in
     (* Do the blocking call *)
+    Lwt_tracing.(!tracer.note_suspend) ();
     let fds_r, fds_w =
       try
         self#select fds_r fds_w timeout
@@ -336,6 +337,7 @@ class virtual select_based = object(self)
             (List.filter bad_fd fds_r,
              List.filter bad_fd fds_w)
     in
+    Lwt_tracing.(!tracer.note_switch) ();
     (* Restart threads waiting for a timeout: *)
     sleep_queue <- restart_actions sleep_queue (Unix.gettimeofday ());
     (* Restart threads waiting on a file descriptors: *)
@@ -360,6 +362,7 @@ class virtual poll_based = object(self)
     (* Compute the timeout. *)
     let timeout = if block then get_next_timeout sleep_queue else 0. in
     (* Do the blocking call *)
+    Lwt_tracing.(!tracer.note_suspend) ();
     let fds =
       try
         self#poll fds timeout
@@ -371,6 +374,7 @@ class virtual poll_based = object(self)
                them have to handle the error: *)
             List.filter (fun (fd, _, _) -> bad_fd fd) fds
     in
+    Lwt_tracing.(!tracer.note_switch) ();
     (* Restart threads waiting for a timeout: *)
     sleep_queue <- restart_actions sleep_queue (Unix.gettimeofday ());
     (* Restart threads waiting on a file descriptors: *)
