@@ -128,6 +128,7 @@ let call_notification id =
 
 let sleep delay =
   let waiter, wakener = Lwt.task () in
+  Lwt_tracing.(!tracer.note_label) (Lwt.id_of_thread waiter) "sleep";
   let ev = Lwt_engine.on_timer delay false (fun ev -> Lwt_engine.stop_event ev; Lwt.wakeup wakener ()) in
   Lwt.on_cancel waiter (fun () -> Lwt_engine.stop_event ev);
   waiter

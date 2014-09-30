@@ -37,7 +37,7 @@ type 'a t
     (** Condition variable type. The type parameter denotes the type of
         value propagated from notifier to waiter. *)
 
-val create : unit -> 'a t
+val create : ?label:string -> unit -> 'a t
     (** [create ()] creates a new condition variable. *)
 
 val wait : ?mutex:Lwt_mutex.t -> 'a t -> 'a Lwt.t
