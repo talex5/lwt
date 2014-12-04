@@ -43,10 +43,10 @@ type 'a t
       type parameter specifies the type of the value propagated from
       [put] to [take]. *)
 
-val create : 'a -> 'a t
+val create : ?label:string -> 'a -> 'a t
   (** [create v] creates a new mailbox variable containing value [v]. *)
 
-val create_empty : unit -> 'a t
+val create_empty : ?label:string -> unit -> 'a t
   (** [create ()] creates a new empty mailbox variable. *)
 
 val put : 'a t -> 'a -> unit Lwt.t
