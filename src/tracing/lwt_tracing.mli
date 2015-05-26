@@ -44,6 +44,9 @@ type tracer = {
   note_created : thread_id -> thread_type -> unit;
   (** [note_created p] indicates when a new thread is created. *)
 
+  note_try_read : thread_id -> thread_id -> unit;
+  (** [note_try_read th p] indicates that [th] checked the state of [p] and found it was sleeping. *)
+
   note_read : thread_id -> unit;
   (** [note_read p] indicates that the current thread read the resolution of p.
    * e.g. we were waiting for p and p has become resolved.
