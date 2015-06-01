@@ -32,6 +32,11 @@ type thread_type =
   | Join
   | Map
   | Condition
+  | On_success
+  | On_failure
+  | On_termination
+  | On_any
+  | Ignore_result
 
 type tracer = {
   note_created : thread_id -> thread_type -> unit;
