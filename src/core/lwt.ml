@@ -804,6 +804,22 @@ let catch x f =
     | Repr _ ->
         assert false
 
+(** Wrapper for [add_immutable_waiter] that reports a new thread to
+ * the tracing system. *)
+let with_new_callback ~watching ty sleeper f =
+  let tid = next_id ty in
+  with_thread_id tid (fun () ->
+    let data = !current_data in
+    add_immutable_waiter sleeper (fun result ->
+      switch_to_thread data;
+      !tracer.note_read (repr watching).tid;
+      let ex =
+        try f result; None
+        with ex -> Some ex in
+      !tracer.note_resolved ~ex tid
+    )
+  )
+
 let on_success t f =
   match check_state (repr t) with
     | Return v ->
@@ -811,12 +827,9 @@ let on_success t f =
     | Fail exn ->
         ()
     | Sleep sleeper ->
-        let data = !current_data in
-        add_immutable_waiter sleeper
+        with_new_callback ~watching:t On_success sleeper
           (function
              | Return v ->
-                 switch_to_thread data;
-                 !tracer.note_read (repr t).tid;
                  call_unsafe f v
              | Fail exn -> ()
              | _ -> assert false)
@@ -830,13 +843,10 @@ let on_failure t f =
     | Fail exn ->
         call_unsafe f exn
     | Sleep sleeper ->
-        let data = !current_data in
-        add_immutable_waiter sleeper
+        with_new_callback ~watching:t On_failure sleeper
           (function
              | Return v -> ()
              | Fail exn ->
-                 switch_to_thread data;
-                 !tracer.note_read (repr t).tid;
                  call_unsafe f exn
              | _ -> assert false)
     | Repr _ ->
@@ -849,11 +859,10 @@ let on_termination t f =
     | Fail exn ->
         call_unsafe f ()
     | Sleep sleeper ->
-        let data = !current_data in
-        add_immutable_waiter sleeper
+        with_new_callback ~watching:t On_termination sleeper
           (function
-             | Return v -> switch_to_thread data; !tracer.note_read (repr t).tid; call_unsafe f ()
-             | Fail exn -> switch_to_thread data; !tracer.note_read (repr t).tid; call_unsafe f ()
+             | Return v -> call_unsafe f ()
+             | Fail exn -> call_unsafe f ()
              | _ -> assert false)
     | Repr _ ->
         assert false
@@ -865,11 +874,10 @@ let on_any t f g =
     | Fail exn ->
         call_unsafe g exn
     | Sleep sleeper ->
-        let data = !current_data in
-        add_immutable_waiter sleeper
+        with_new_callback ~watching:t On_any sleeper
           (function
-             | Return v -> switch_to_thread data; !tracer.note_read (repr t).tid; call_unsafe f v
-             | Fail exn -> switch_to_thread data; !tracer.note_read (repr t).tid; call_unsafe g exn
+             | Return v -> call_unsafe f v
+             | Fail exn -> call_unsafe g exn
              | _ -> assert false)
     | Repr _ ->
         assert false
@@ -922,7 +930,7 @@ let ignore_result t =
     | Fail e ->
         raise e
     | Sleep sleeper ->
-        add_immutable_waiter sleeper
+        with_new_callback ~watching:t Ignore_result sleeper
           (function
              | Return _ -> ()
              | Fail exn -> !async_exception_hook exn
