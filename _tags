@@ -442,3 +442,4 @@ true: annot, bin_annot
 <tests/ppx/*.ml{,i,y}>: use_lwt-unix
 <tests/ppx/*.ml{,i,y}>: use_test
 # OASIS_STOP
+true: strict_sequence

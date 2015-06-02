@@ -66,14 +66,6 @@ let get key =
   with Not_found ->
     None
 
-let update_data key = function
-  | Some _ as value ->
-      let vars, tid = !current_data in
-      current_data := (Int_map.add key.id (fun () -> key.store <- value) vars, tid)
-  | None ->
-      let vars, tid = !current_data in
-      current_data := (Int_map.remove key.id vars, tid)
-
 let with_value key value f =
   let save = !current_data in
   let vars, tid = save in
@@ -94,7 +86,7 @@ let with_value key value f =
     raise exn
 
 let with_thread_id tid f =
-  let (vars, old_tid) as save = !current_data in
+  let (vars, _old_tid) as save = !current_data in
   try
     current_data := vars, tid;
     let result = f () in
@@ -213,7 +205,7 @@ let resolve t state =
   begin match state with
   | Return _ -> !tracer.note_resolved ~ex:None t.tid
   | Fail ex -> !tracer.note_resolved ~ex:(Some ex) t.tid
-  | Sleep _ -> assert false end;
+  | Sleep _ | Repr _ -> assert false end;
   t.state <- state
 
 external thread_repr : 'a t -> 'a thread_repr = "%identity"
@@ -230,7 +222,7 @@ let as_thread tid fn =
   let (_, old_tid) as old_data = !current_data in
   try
     current_data := (Int_map.empty, tid);
-    Lwt_tracing.(!tracer.note_signal) old_tid;
+    !tracer.note_signal old_tid;
     let r = fn () in
     switch_to_thread old_data;
     r
@@ -638,13 +630,16 @@ let temp t thread_type =
   tmp
 
 let temp_many l thread_type =
-  thread {
-    tid = next_id thread_type;
-    state = Sleep { cancel = Cancel_links (pack_threads l);
-                    waiters = Empty;
-                    removed = 0;
-                    cancel_handlers = Chs_empty }
-  }
+  let tmp =
+    {
+      tid = next_id thread_type;
+      state = Sleep { cancel = Cancel_links (pack_threads l);
+                      waiters = Empty;
+                      removed = 0;
+                      cancel_handlers = Chs_empty }
+    } in
+  l |> List.iter (fun src -> !tracer.note_try_read tmp.tid (repr src).tid);
+  thread tmp
 
 let wait_aux ?(thread_type=Wait) () = {
   tid = next_id thread_type;
@@ -983,7 +978,6 @@ let ready_count l =
     let x = repr x in
     match x.state with
     | Sleep _ ->
-        !tracer.note_try_read x.tid;
         acc
     | _ -> acc + 1) 0 l
 
@@ -1024,7 +1018,7 @@ let random_state = lazy (Random.State.make [||])
  * Find it and notify. *)
 let notify_read l state =
   let t = l |> List.find (fun t -> (repr t).state == state) in
-  Lwt_tracing.(!tracer.note_read) (repr t).tid
+  !tracer.note_read (repr t).tid
 
 let choose l =
   let ready = ready_count l in
@@ -1265,6 +1259,7 @@ let join l =
     | t :: rest ->
         match check_state (repr t) with
           | Sleep sleeper ->
+              !tracer.note_try_read res_id (repr t).tid;
               incr sleeping;
               add_immutable_waiter sleeper (fun r ->
                 with_thread_id res_id (fun () ->
