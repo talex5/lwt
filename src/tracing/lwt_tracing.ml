@@ -32,9 +32,15 @@ type thread_type =
   | Join
   | Map
   | Condition
+  | On_success
+  | On_failure
+  | On_termination
+  | On_any
+  | Ignore_result
 
 type tracer = {
   note_created : thread_id -> thread_type -> unit;
+  note_try_read : thread_id -> thread_id -> unit;
   note_read : thread_id -> unit;
   note_resolved : thread_id -> ex:exn option -> unit;
   note_signal : thread_id -> unit;
@@ -47,6 +53,7 @@ type tracer = {
 let null_tracer =
   let ignore2 _ _ = () in {
     note_created = ignore2;
+    note_try_read = ignore2;
     note_read = ignore;
     note_resolved = (fun _ ~ex:_ -> ());
     note_signal = ignore;

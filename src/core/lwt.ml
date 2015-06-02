@@ -626,13 +626,16 @@ let fail_invalid_arg msg =
   thread { state = Fail (Invalid_argument msg); tid = current_id () }
 
 let temp t thread_type =
-  thread {
-    tid = next_id thread_type;
+  let tid = next_id thread_type in
+  let tmp = thread {
+    tid;
     state = Sleep { cancel = Cancel_link (pack_thread (thread t));
                     waiters = Empty;
                     removed = 0;
                     cancel_handlers = Chs_empty }
-  }
+  } in
+  !tracer.note_try_read tid t.tid;
+  tmp
 
 let temp_many l thread_type =
   thread {
@@ -968,7 +971,13 @@ let rec nth_ready l n =
               )
 
 let ready_count l =
-  List.fold_left (fun acc x -> match (repr x).state with Sleep _ -> acc | _ -> acc + 1) 0 l
+  List.fold_left (fun acc x ->
+    let x = repr x in
+    match x.state with
+    | Sleep _ ->
+        !tracer.note_try_read x.tid;
+        acc
+    | _ -> acc + 1) 0 l
 
 let remove_waiters l =
   List.iter
