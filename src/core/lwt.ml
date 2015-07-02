@@ -1233,12 +1233,11 @@ let npick threads =
   init threads
 
 let join l =
-  let res = temp_many l Join
+  let res = lazy (temp_many l Join)
   (* Number of threads still sleeping: *)
   and sleeping = ref 0
   (* The state that must be returned: *)
   and return_state = ref state_return_unit in
-  let res_id = id_of_thread res in
   let handle_result state =
     begin
       match !return_state, state with
@@ -1247,18 +1246,19 @@ let join l =
     end;
     decr sleeping;
     (* All threads are terminated, we can wakeup the result: *)
-    if !sleeping = 0 then fast_connect res !return_state
+    if !sleeping = 0 then fast_connect (Lazy.force res) !return_state
   in
   let rec init = function
     | [] ->
         if !sleeping = 0 then
           (* No thread is sleeping, returns immediately: *)
-          thread { tid = next_id Join; state = !return_state }
+          thread { tid = current_id (); state = !return_state }
         else
-          res
+          Lazy.force res
     | t :: rest ->
         match check_state (repr t) with
           | Sleep sleeper ->
+              let res_id = id_of_thread (Lazy.force res) in
               !tracer.note_try_read res_id (repr t).tid;
               incr sleeping;
               add_immutable_waiter sleeper (fun r ->
