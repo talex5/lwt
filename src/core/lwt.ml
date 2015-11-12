@@ -1,9 +1,9 @@
 (* Lightweight thread library for OCaml
  * http://www.ocsigen.org/lwt
  * Module Lwt
- * Copyright (C) 2005-2008 Jérôme Vouillon
- * Laboratoire PPS - CNRS Université Paris Diderot
- *               2009-2012 Jérémie Dimino
+ * Copyright (C) 2005-2008 JÃ©rÃ´me Vouillon
+ * Laboratoire PPS - CNRS UniversitÃ© Paris Diderot
+ *               2009-2012 JÃ©rÃ©mie Dimino
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as
@@ -609,6 +609,7 @@ let return v =
 let state_return_unit = Return ()
 let return_unit = thread { state = state_return_unit; tid = -1L }
 let return_none = return None
+let return_some x = return (Some x)
 let return_nil = return []
 let return_true = return true
 let return_false = return false
@@ -1302,7 +1303,9 @@ let pause () =
   waiter
 
 let wakeup_paused () =
-  if not (Lwt_sequence.is_empty paused) then begin
+  if Lwt_sequence.is_empty paused then
+    paused_count := 0
+  else begin
     let tmp = Lwt_sequence.create () in
     Lwt_sequence.transfer_r paused tmp;
     paused_count := 0;

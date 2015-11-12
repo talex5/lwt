@@ -1,9 +1,9 @@
 (* Lightweight thread library for OCaml
  * http://www.ocsigen.org/lwt
  * Interface Lwt_unix
- * Copyright (C) 2005-2008 Jérôme Vouillon
- * Laboratoire PPS - CNRS Université Paris Diderot
- *                    2009 Jérémie Dimino
+ * Copyright (C) 2005-2008 JÃ©rÃ´me Vouillon
+ * Laboratoire PPS - CNRS UniversitÃ© Paris Diderot
+ *                    2009 JÃ©rÃ©mie Dimino
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as
@@ -843,6 +843,22 @@ val setsockopt_float : file_descr -> socket_float_option -> float -> unit
 
 val getsockopt_error : file_descr -> Unix.error option
   (** Wrapper for [Unix.getsockopt_error] *)
+
+(** {3 Multicast functions} *)
+
+val mcast_set_loop : file_descr -> bool -> unit
+  (** Whether sent multicast messages are received by the sending host *)
+
+val mcast_set_ttl : file_descr -> int -> unit
+  (** Set TTL/hops value *)
+
+val mcast_add_membership : file_descr -> ?ifname:Unix.inet_addr -> Unix.inet_addr -> unit
+  (** [mcast_add_membership fd ~ifname addr] joins the multicast group [addr]
+      on the network interface [ifname]. *)
+
+val mcast_drop_membership : file_descr -> ?ifname:Unix.inet_addr -> Unix.inet_addr -> unit
+  (** [mcast_drop_membership fd ~ifname addr] leaves the multicast group [addr]
+      on the network interface [ifname]. *)
 
 (** {2 Host and protocol databases} *)
 

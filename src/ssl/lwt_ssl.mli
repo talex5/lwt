@@ -1,8 +1,8 @@
 (* Lightweight thread library for OCaml
  * http://www.ocsigen.org/lwt
  * Interface Lwt_ssl
- * Copyright (C) 2005-2008 Jérôme Vouillon
- * Laboratoire PPS - CNRS Université Paris Diderot
+ * Copyright (C) 2005-2008 JÃ©rÃ´me Vouillon
+ * Laboratoire PPS - CNRS UniversitÃ© Paris Diderot
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as
@@ -69,8 +69,8 @@ val wait_write : socket -> unit Lwt.t
 val shutdown : socket -> Unix.shutdown_command -> unit
 val close : socket -> unit Lwt.t
 
-val in_channel_of_descr : socket -> Lwt_io.input_channel
-val out_channel_of_descr : socket -> Lwt_io.output_channel
+val in_channel_of_descr : ?buffer:Lwt_bytes.t -> socket -> Lwt_io.input_channel
+val out_channel_of_descr : ?buffer:Lwt_bytes.t -> socket -> Lwt_io.output_channel
 
 val ssl_shutdown : socket -> unit Lwt.t
 
