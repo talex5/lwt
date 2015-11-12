@@ -1,6 +1,6 @@
 # OASIS_START
-# DO NOT EDIT (digest: 67839050aaba5bb088193f5c5e0ad1e9)
-version = "2.4.7"
+# DO NOT EDIT (digest: 97adf7f628c7a39db78b0809dd9694bb)
+version = "2.5.0"
 description = "Lightweight thread library for OCaml"
 requires = "lwt unix lwt.unix"
 archive(byte) = "test.cma"

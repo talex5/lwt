@@ -217,15 +217,63 @@ CAMLprim value lwt_test(value Unit)
 "
 
 let netdb_reentrant_code = "
+#define _POSIX_PTHREAD_SEMANTICS
 #include <caml/mlvalues.h>
 #include <netdb.h>
+#include <stddef.h>
 
 CAMLprim value lwt_test(value Unit)
 {
-  getprotobyname_r(0, 0, 0, 0, 0);
-  getprotobynumber_r(0, 0, 0, 0, 0);
-  getservbyname_r(0, 0, 0, 0, 0, 0);
-  getservbyport_r(0, 0, 0, 0, 0, 0);
+  struct hostent *he;
+  struct servent *se;
+  he = gethostbyname_r((const char *)NULL, (struct hostent *)NULL,(char *)NULL, (int)0, (struct hostent **)NULL, (int *)NULL);
+  he = gethostbyaddr_r((const char *)NULL, (int)0, (int)0,(struct hostent *)NULL, (char *)NULL, (int)0, (struct hostent **)NULL,(int *)NULL);
+  se = getservbyname_r((const char *)NULL, (const char *)NULL,(struct servent *)NULL, (char *)NULL, (int)0, (struct servent **)NULL);
+  se = getservbyport_r((int)0, (const char *)NULL,(struct servent *)NULL, (char *)NULL, (int)0, (struct servent **)NULL);
+  return Val_unit;
+}
+"
+
+let hostent_reentrant_code = "
+#define _GNU_SOURCE
+#include <stddef.h>
+#include <caml/mlvalues.h>
+#include <caml/config.h>
+/* Helper functions for not re-entrant functions */
+#if !defined(HAS_GETHOSTBYADDR_R) || (HAS_GETHOSTBYADDR_R != 7 && HAS_GETHOSTBYADDR_R != 8)
+#define NON_R_GETHOSTBYADDR 1
+#endif
+
+#if !defined(HAS_GETHOSTBYNAME_R) || (HAS_GETHOSTBYNAME_R != 5 && HAS_GETHOSTBYNAME_R != 6)
+#define NON_R_GETHOSTBYNAME 1
+#endif
+
+CAMLprim value lwt_test(value u)
+{
+  (void)u;
+#if defined(NON_R_GETHOSTBYNAME) || defined(NON_R_GETHOSTBYNAME)
+#error \"not available\"
+#else
+  return Val_unit;
+#endif
+}
+"
+
+let struct_ns_code conversion = "
+#define _GNU_SOURCE
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <caml/mlvalues.h>
+
+#define NANOSEC" ^ conversion ^ "
+
+CAMLprim value lwt_test() {
+  struct stat *buf;
+  double a, m, c;
+  a = (double)NANOSEC(buf, a);
+  m = (double)NANOSEC(buf, m);
+  c = (double)NANOSEC(buf, c);
   return Val_unit;
 }
 "
@@ -309,7 +357,7 @@ let test_code args stub_code =
   let stub_file, oc = Filename.open_temp_file "lwt_stub" ".c" in
   let cleanup () =
     safe_remove stub_file;
-    safe_remove (Filename.chop_extension (Filename.basename stub_file) ^ !ext_obj)
+    safe_remove (Filename.chop_extension stub_file ^ !ext_obj)
   in
   try
     output_string oc stub_code;
@@ -531,6 +579,28 @@ let () =
     test_code (opt, lib) glib_code
   in
 
+  let test_nanosecond_stat () =
+    printf "testing for nanosecond stat support:%!";
+    let conversions = [
+      ("(buf, field) buf->st_##field##tim.tv_nsec",      "*tim.tv_nsec");
+      ("(buf, field) buf->st_##field##timespec.tv_nsec", "*timespec.tv_nsec");
+      ("(buf, field) buf->st_##field##timensec",         "*timensec");
+    ] in
+    let fallback = "(buf, field) 0.0" in
+    let conversion = try
+      let (conversion, desc) = List.find (fun (conversion, _desc) ->
+        test_code ([], []) (struct_ns_code conversion)
+      ) conversions in
+      printf " %s %s\n%!" (String.make 11 '.') desc;
+      conversion
+    with Not_found -> begin
+      printf " %s unavailable\n%!" (String.make 11 '.');
+      fprintf config "#define NANOSEC%s\n" fallback;
+      fallback
+    end in
+    fprintf config "#define NANOSEC%s\n" conversion
+  in
+
   test_feature ~do_check:!use_libev "libev" "HAVE_LIBEV" test_libev;
   test_feature ~do_check:!use_pthread "pthread" "HAVE_PTHREAD" test_pthread;
   test_feature ~do_check:!use_glib "glib" "" test_glib;
@@ -580,6 +650,8 @@ Lwt can use pthread or the win32 API.
   test_feature ~do_check "fdatasync" "HAVE_FDATASYNC" (fun () -> test_code ([], []) fdatasync_code);
   test_feature ~do_check:(do_check && not !android_target)
     "netdb_reentrant" "HAVE_NETDB_REENTRANT" (fun () -> test_code ([], []) netdb_reentrant_code);
+  test_feature ~do_check "reentrant gethost*" "HAVE_REENTRANT_HOSTENT" (fun () -> test_code ([], []) hostent_reentrant_code);
+  test_nanosecond_stat ();
 
   let get_cred_vars = [
     "HAVE_GET_CREDENTIALS_LINUX";

@@ -79,7 +79,7 @@ type section
       level of any section matching ["foo[*]"] is {!Error}.
 
       If the pattern is omited in a rule then the pattern ["*"] is
-      used instead, so [LWT_LOG] may just contains ["debug"] for
+      used instead, so [LWT_LOG] may just contain ["debug"] for
       instance.
 
       By default, the following rule apply : ["* -> notice"] *)
@@ -93,7 +93,7 @@ val load_rules : string -> unit
 val add_rule : string -> level -> unit
   (** [add_rule pattern level] adds a rule for sections logging
       levels. The rule is added before all other rules. It takes
-      effect immediately and affect all sections for which the level
+      effect immediately and affects all sections for which the level
       has not been set explicitly with {!Section.set_level}. [pattern]
       may contains [*]. For example:
 
@@ -110,6 +110,10 @@ val append_rule : string -> level -> unit
         Lwt_log_core.append_rule "*" Lwt_log_core.Info
       ]}
   *)
+
+val reset_rules : unit -> unit
+  (** removes all rules.
+   *)
 
 (** {2 Logging functions} *)
 
@@ -254,8 +258,9 @@ val close : logger -> unit Lwt.t
 
 val default : logger ref
   (** The default logger. It is used as default when no one is
-      specified. Initially, it sends messages to the standard output
-      for error messages. *)
+      specified. If {!Lwt_core} is linked (in the package [lwt.unix])
+      the default logger sends all messages to standard error.
+      Otherwise the default logger is {!null}. *)
 
 val broadcast : logger list -> logger
   (** [broadcast loggers] is a logger which send messages to all the

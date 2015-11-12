@@ -1,9 +1,9 @@
 (* Lightweight thread library for OCaml
  * http://www.ocsigen.org/lwt
  * Module Lwt_unix
- * Copyright (C) 2005-2008 Jérôme Vouillon
- * Laboratoire PPS - CNRS Université Paris Diderot
- *                    2009 Jérémie Dimino
+ * Copyright (C) 2005-2008 JÃ©rÃ´me Vouillon
+ * Laboratoire PPS - CNRS UniversitÃ© Paris Diderot
+ *                    2009 JÃ©rÃ©mie Dimino
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as
@@ -815,9 +815,9 @@ struct
 
   let stat name =
     if Sys.win32 then
-      run_job (stat_job name)
-    else
       Lwt.return (Unix.LargeFile.stat name)
+    else
+      run_job (stat_job name)
 
   external lstat_job : string -> Unix.LargeFile.stats job = "lwt_unix_lstat_64_job"
 
@@ -1330,7 +1330,7 @@ let shutdown ch shutdown_command =
 external stub_socketpair : socket_domain -> socket_type -> int -> Unix.file_descr * Unix.file_descr = "lwt_unix_socketpair_stub"
 
 let socketpair dom typ proto =
-  let do_socketpair = if Sys.win32 then Unix.socketpair else stub_socketpair in
+  let do_socketpair = if Sys.win32 then stub_socketpair else Unix.socketpair  in
   let (s1, s2) = do_socketpair dom typ proto in
   (mk_ch ~blocking:false s1, mk_ch ~blocking:false s2)
 
@@ -1508,6 +1508,36 @@ let getsockopt_error ch =
   Unix.getsockopt_error ch.fd
 
 (* +-----------------------------------------------------------------+
+   | Multicast functions                                             |
+   +-----------------------------------------------------------------+ *)
+
+external stub_mcast_set_loop : Unix.file_descr -> bool -> unit = "lwt_unix_mcast_set_loop"
+
+external stub_mcast_set_ttl : Unix.file_descr -> int -> unit = "lwt_unix_mcast_set_ttl"
+
+type mcast_action = Add | Drop
+
+external stub_mcast_modify_membership :
+  Unix.file_descr -> mcast_action -> Unix.inet_addr -> Unix.inet_addr -> unit =
+  "lwt_unix_mcast_modify_membership"
+
+let mcast_set_loop ch flag =
+  check_descriptor ch;
+  stub_mcast_set_loop ch.fd flag
+
+let mcast_set_ttl ch ttl =
+  check_descriptor ch;
+  stub_mcast_set_ttl ch.fd ttl
+
+let mcast_add_membership ch ?(ifname = Unix.inet_addr_any) addr =
+  check_descriptor ch;
+  stub_mcast_modify_membership ch.fd Add ifname addr
+
+let mcast_drop_membership ch ?(ifname = Unix.inet_addr_any) addr =
+  check_descriptor ch;
+  stub_mcast_modify_membership ch.fd Drop ifname addr
+
+(* +-----------------------------------------------------------------+
    | Host and protocol databases                                     |
    +-----------------------------------------------------------------+ *)
 
@@ -1545,53 +1575,85 @@ let gethostname () =
   else
     run_job (gethostname_job ())
 
+let hostent_mutex = Lwt_mutex.create ()
+
 external gethostbyname_job : string -> Unix.host_entry job = "lwt_unix_gethostbyname_job"
 
 let gethostbyname name =
   if Sys.win32 then
     Lwt.return (Unix.gethostbyname name)
-  else
+  else if Lwt_config._HAVE_REENTRANT_HOSTENT then
     run_job (gethostbyname_job name)
+  else
+    Lwt_mutex.with_lock hostent_mutex ( fun () ->
+        run_job (gethostbyname_job name) )
 
 external gethostbyaddr_job : Unix.inet_addr -> Unix.host_entry job = "lwt_unix_gethostbyaddr_job"
 
 let gethostbyaddr addr =
   if Sys.win32 then
     Lwt.return (Unix.gethostbyaddr addr)
-  else
+  else if Lwt_config._HAVE_REENTRANT_HOSTENT then
     run_job (gethostbyaddr_job addr)
+  else
+    Lwt_mutex.with_lock hostent_mutex ( fun () ->
+        run_job (gethostbyaddr_job addr) )
+
+let protoent_mutex =
+  if Sys.win32 || Lwt_config._HAVE_NETDB_REENTRANT then
+    hostent_mutex
+  else
+    Lwt_mutex.create ()
 
 external getprotobyname_job : string -> Unix.protocol_entry job = "lwt_unix_getprotobyname_job"
 
 let getprotobyname name =
   if Sys.win32 then
     Lwt.return (Unix.getprotobyname name)
-  else
+  else if Lwt_config._HAVE_NETDB_REENTRANT then
     run_job (getprotobyname_job name)
+  else
+    Lwt_mutex.with_lock protoent_mutex ( fun () ->
+        run_job (getprotobyname_job name))
 
 external getprotobynumber_job : int -> Unix.protocol_entry job = "lwt_unix_getprotobynumber_job"
 
 let getprotobynumber number =
   if Sys.win32 then
     Lwt.return (Unix.getprotobynumber number)
-  else
+  else if Lwt_config._HAVE_NETDB_REENTRANT then
     run_job (getprotobynumber_job number)
+  else
+    Lwt_mutex.with_lock protoent_mutex ( fun () ->
+        run_job (getprotobynumber_job number))
+
+let servent_mutex =
+  if Sys.win32 || Lwt_config._HAVE_NETDB_REENTRANT then
+    hostent_mutex
+  else
+    Lwt_mutex.create ()
 
 external getservbyname_job : string -> string -> Unix.service_entry job = "lwt_unix_getservbyname_job"
 
 let getservbyname name x =
   if Sys.win32 then
     Lwt.return (Unix.getservbyname name x)
-  else
+  else if Lwt_config._HAVE_NETDB_REENTRANT then
     run_job (getservbyname_job name x)
+  else
+    Lwt_mutex.with_lock protoent_mutex ( fun () ->
+        run_job (getservbyname_job name x) )
 
 external getservbyport_job : int -> string -> Unix.service_entry job = "lwt_unix_getservbyport_job"
 
 let getservbyport port x =
   if Sys.win32 then
     Lwt.return (Unix.getservbyport port x)
-  else
+  else if Lwt_config._HAVE_NETDB_REENTRANT then
     run_job (getservbyport_job port x)
+  else
+    Lwt_mutex.with_lock protoent_mutex ( fun () ->
+        run_job (getservbyport_job port x) )
 
 type addr_info =
     Unix.addr_info =
