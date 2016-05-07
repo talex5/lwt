@@ -15,6 +15,10 @@ VERSION=`oasis query Version 2> /dev/null`
 PREFIX=$NAME-$VERSION
 ARCHIVE=$(pwd)/$PREFIX.tar.gz
 
+# Clean setup.data and other generated files.
+make clean
+make distclean
+
 # Create a branch for the release
 git checkout -b release-$VERSION
 
@@ -26,11 +30,11 @@ sed 's/^SETUP := setup-dev.exe.*/SETUP := setup.exe/' Makefile > Makefile.new
 mv Makefile.new Makefile
 
 # Remove this script and dev-files
-rm -f dist.sh opam .jenkins.sh
+rm -f dist.sh opam .jenkins.sh *.exe
 
 # Commit
 git add --all --force
-git commit -m "prepare release"
+git commit -m "Prepare release"
 git tag $VERSION
 
 git checkout master
