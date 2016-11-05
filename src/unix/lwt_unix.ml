@@ -92,7 +92,9 @@ module Notifiers = Hashtbl.Make(struct
 
 let notifiers = Notifiers.create 1024
 
-let current_notification_id = ref 0
+(* See https://github.com/ocsigen/lwt/issues/277 and
+   https://github.com/ocsigen/lwt/pull/278. *)
+let current_notification_id = ref (0x7FFFFFFF - 1000)
 
 let rec find_free_id id =
   if Notifiers.mem notifiers id then
@@ -348,7 +350,7 @@ let mk_ch ?blocking ?(set_flags=true) fd = {
   hooks_writable = Lwt_sequence.create ();
 }
 
-let rec check_descriptor ch =
+let check_descriptor ch =
   match ch.state with
     | Opened ->
         ()
@@ -692,6 +694,10 @@ let ftruncate ch offset =
    | File system synchronisation                                     |
    +-----------------------------------------------------------------+ *)
 
+(* fdatasync appears to be an undocumented system call on OS X. It is detected
+   during configuration of Lwt, and seems to work for now. However, it may break
+   if we make implicit function declaration an error, or in other
+   circumstances. *)
 let fdatasync ch =
   check_descriptor ch;
   run_job (Jobs.fdatasync_job ch.fd)
@@ -766,6 +772,15 @@ let file_exists name =
        match e with
        | Unix.Unix_error (Unix.ENOENT, _, _) -> Lwt.return_false
        | _ -> Lwt.fail e)
+
+external utimes_job : string -> float -> float -> unit job =
+  "lwt_unix_utimes_job"
+
+let utimes path atime mtime =
+  if Sys.win32 then
+    Lwt.return (Unix.utimes path atime mtime)
+  else
+    run_job (utimes_job path atime mtime)
 
 external isatty_job : Unix.file_descr -> bool job = "lwt_unix_isatty_job"
 

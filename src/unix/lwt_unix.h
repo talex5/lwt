@@ -23,6 +23,8 @@
 #ifndef __LWT_UNIX_H
 #define __LWT_UNIX_H
 
+#define CAML_NAME_SPACE
+
 #include <lwt_config.h>
 #include <caml/mlvalues.h>
 #include <caml/unixsupport.h>
@@ -81,7 +83,7 @@ void lwt_unix_not_available(char const *feature) Noreturn;
    +-----------------------------------------------------------------+ */
 
 /* Sends a notification for the given id. */
-void lwt_unix_send_notification(int id);
+void lwt_unix_send_notification(intnat id);
 
 /* +-----------------------------------------------------------------+
    | Threading                                                       |
@@ -178,7 +180,7 @@ struct lwt_unix_job {
 
   /* Id used to notify the main thread in case the job do not
      terminate immediately. */
-  int notification_id;
+  intnat notification_id;
 
   /* The function to call to do the work.
 

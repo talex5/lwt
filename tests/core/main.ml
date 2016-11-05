@@ -24,4 +24,6 @@ Test.run "core" [
   Test_lwt.suite;
   Test_lwt_stream.suite;
   Test_lwt_list.suite;
+  Test_lwt_switch.suite;
+  Test_lwt_mutex.suite;
 ]

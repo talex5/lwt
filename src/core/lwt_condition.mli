@@ -63,3 +63,9 @@ val broadcast : 'a t -> 'a -> unit
     (** [broadcast condvar value] notifies all waiting threads. Each
         will be awoken in turn and will receive the same notification
         value. *)
+
+val broadcast_exn : 'a t -> exn -> unit
+    (** [broadcast_exn condvar exn] fails all waiting threads with exception
+        [exn].
+
+        @since 2.6.0 *)
