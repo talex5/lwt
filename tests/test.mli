@@ -28,12 +28,13 @@ type t
 type suite
   (** Type of a suite of tests *)
 
-val test_direct : name : string -> run : (unit -> bool) -> t
+val test_direct : string -> ?only_if:(unit -> bool) -> (unit -> bool) -> t
   (** Defines a test. [run] must returns [true] if the test succeeded
-      and [false] otherwise. *)
+      and [false] otherwise. [only_if] is used to conditionally skip the
+      test. *)
 
-val test : name : string -> run : (unit -> bool Lwt.t) -> t
-  (** Defines a test which returns a thread. *)
+val test : string -> ?only_if:(unit -> bool) -> (unit -> bool Lwt.t) -> t
+  (** Like [test_direct], but defines a test which runs a thread. *)
 
 val suite : name : string -> tests : t list -> suite
   (** Defines a suite of tests *)
@@ -41,3 +42,6 @@ val suite : name : string -> tests : t list -> suite
 val run : name : string -> suites : suite list -> unit
   (** Run all the given tests and exit the program with an exit code
       of [0] if all tests succeeded and with [1] otherwise. *)
+
+val temp_file : unit -> string
+(** Creates a temporary file in [_build/] and evaluates to its path. *)

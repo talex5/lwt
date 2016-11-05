@@ -30,7 +30,7 @@
     waiting for some event to happen.
 
     Lwt threads are cooperative in the sense that switching to another
-    thread is awlays explicit (with {!wakeup} or {!wakeup_exn}). When a
+    thread is always explicit (with {!wakeup} or {!wakeup_exn}). When a
     thread is running, it executes as much as possible, and then
     returns (a value or an error) or sleeps.
 
@@ -81,7 +81,7 @@ val bind : 'a t -> ('a -> 'b t) -> 'b t
       The result of a thread can be bound several times.
 
       Note that [bind] will not propagate backtraces correctly.
-      See <<a_api project="lwt" | The manual>>
+      See {{:http://ocsigen.org/lwt/manual/} the manual}
       for how to enable backtraces.
   *)
 
@@ -120,6 +120,14 @@ val return_true : bool t
 
 val return_false : bool t
   (** [return_false = return false] *)
+
+val return_ok : 'a -> ('a, _) Result.result t
+  (** [return_ok x] is equivalent to [return (Ok x)].
+      @since 2.6.0 *)
+
+val return_error : 'e -> (_, 'e) Result.result t
+  (** [return_error x] is equivalent to [return (Error x)].
+      @since 2.6.0 *)
 
 (** {2 Thread storage} *)
 
@@ -245,11 +253,17 @@ val async : (unit -> 'a t) -> unit
       terminates (for instance, because it is looping). *)
 
 val ignore_result : 'a t -> unit
-  (** [ignore_result t] is like [Pervasives.ignore t] except that:
+(** [ignore_result t] behaves as follows:
 
-      - if [t] already failed, it raises the exception now,
-      - if [t] is sleeping and fails later, the exception will be
-        given to {!async_exception_hook}. *)
+    - if [t] has completed with a result, [ignore_result t] does nothing,
+    - if [t] has completed with an exception, [ignore_result t] raises the
+      exception,
+    - if [t] has not completed, [ignore_result t] evaluates to [()] immediately,
+      but if [t] completes later with an exception, it will be given to
+      {!async_exception_hook}.
+
+    Note that this means [ignore_result t] does not wait for [t] to complete. If
+    you need to wait, use [t >>= fun _ -> (* ...after t... *)]. *)
 
 val async_exception_hook : (exn -> unit) ref
   (** Function called when a asynchronous exception is thrown.
@@ -260,7 +274,7 @@ val async_exception_hook : (exn -> unit) ref
       The behavior is undefined if this function raise an
       exception.
 
-      See <<a_api project="lwt" | The manual>>
+      See {{:http://ocsigen.org/lwt/manual/} the manual}
       for how to enable backtraces.
   *)
 
@@ -295,14 +309,18 @@ val wakeup_later_exn : 'a u -> exn -> unit
 val waiter_of_wakener : 'a u -> 'a t
   (** Returns the thread associated to a wakener. *)
 
-type +'a result
-  (** Either a value of type ['a], either an exception. *)
+type +'a result = ('a, exn) Result.result
+  (** Either a value of type ['a], either an exception.
+
+      This type is defined as [('a, exn) Result.result] since 2.6.0. *)
 
 val make_value : 'a -> 'a result
-  (** [value x] creates a result containing the value [x]. *)
+  (** [value x] creates a result containing the value [x].
+      @deprecated Since 2.6.0. Use {!Result.Ok} *)
 
 val make_error : exn -> 'a result
-  (** [error e] creates a result containing the exception [e]. *)
+  (** [error e] creates a result containing the exception [e].
+      @deprecated Since 2.6.0. Use {!Result.Error} *)
 
 val of_result : 'a result -> 'a t
   (** Returns a thread from a result. *)
@@ -492,6 +510,8 @@ val backtrace_bind : (exn -> exn) -> 'a t -> ('a -> 'b t) -> 'b t
 val backtrace_catch : (exn -> exn) -> (unit -> 'a t) -> (exn -> 'a t) -> 'a t
 val backtrace_try_bind : (exn -> exn) -> (unit -> 'a t) -> ('a -> 'b t) -> (exn -> 'b t) -> 'b t
 val backtrace_finalize : (exn -> exn) -> (unit -> 'a t) -> (unit -> unit t) -> 'a t
+
+val abandon_wakeups : unit -> unit
 
 val id_of_thread : 'a t -> Lwt_tracing.thread_id
 val current_id : unit -> Lwt_tracing.thread_id

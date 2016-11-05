@@ -376,6 +376,12 @@ let leave_wakeup (already_wakening, snapshot) =
   end else
     current_data := snapshot; !tracer.note_switch ()
 
+(* See https://github.com/ocsigen/lwt/issues/48. *)
+(* This runs any existing handlers scheduled with Lwt.wakeup_later, then
+   hard-exits the current wakeup. *)
+let abandon_wakeups () =
+  if !wakening then leave_wakeup (false, (Int_map.empty, 0L))
+
 let safe_run_waiters sleeper state =
   let ctx = enter_wakeup () in
   unsafe_run_waiters sleeper state;
@@ -384,12 +390,16 @@ let safe_run_waiters sleeper state =
 (* A ['a result] is either [Return of 'a] or [Fail of exn] so it is
    covariant. *)
 
-type +'a result (* = 'a thread_state *)
-external result_of_state : 'a thread_state -> 'a result = "%identity"
-external state_of_result : 'a result -> 'a thread_state = "%identity"
+type +'a result = ('a, exn) Result.result
 
-let make_value v = result_of_state (Return v)
-let make_error e = result_of_state (Fail e)
+let state_of_result
+  : 'a result -> 'a thread_state
+  = function
+  | Result.Ok x -> Return x
+  | Result.Error e -> Fail e
+
+let make_value v = Result.Ok v
+let make_error e = Result.Error e
 
 let wakeup_result t result =
   let t = repr_rec (wakener_repr t) in
@@ -605,6 +615,8 @@ let return_some x = return (Some x)
 let return_nil = return []
 let return_true = return true
 let return_false = return false
+let return_ok x = return (Result.Ok x)
+let return_error x = return (Result.Error x)
 
 let of_result result =
   thread { state = state_of_result result; tid = current_id () }
@@ -934,19 +946,6 @@ let ignore_result t =
     | Repr _ ->
         assert false
 
-let protected t =
-  match (repr t).state with
-    | Sleep sleeper ->
-        let res = thread (task_aux ()) in
-        (* We use [fact_connect_if] because when [res] is canceled, it
-           will always terminate before [t]. *)
-        add_immutable_waiter sleeper (fast_connect_if res);
-        res
-    | Return _ | Fail _ ->
-        t
-    | Repr _ ->
-        assert false
-
 let no_cancel t =
   match (repr t).state with
     | Sleep sleeper ->
@@ -1232,6 +1231,25 @@ let npick threads =
               collect acc l
   in
   init threads
+
+let protected t =
+  match (repr t).state with
+    | Sleep sleeper ->
+        let res = thread (task_aux ()) in
+        (* We use [fact_connect_if] because when [res] is canceled, it
+           will always terminate before [t]. *)
+        let rec waiter_cell = ref (Some waiter)
+        and waiter state = fast_connect_if res state in
+        add_removable_waiter [t] waiter_cell;
+        on_cancel res (fun () ->
+          waiter_cell := None;
+          remove_waiters [t]);
+        res
+
+    | Return _ | Fail _ ->
+        t
+    | Repr _ ->
+        assert false
 
 let join l =
   let res = lazy (temp_many l Join)

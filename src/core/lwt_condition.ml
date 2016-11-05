@@ -70,3 +70,10 @@ let broadcast (cvar, trace_thread, _) arg =
   Lwt.as_thread trace_thread (fun () ->
     List.iter (fun wakener -> Lwt.wakeup_later wakener arg) wakeners
   )
+
+let broadcast_exn (cvar, trace_thread, _) exn =
+  let wakeners = Lwt_sequence.fold_r (fun x l -> x :: l) cvar [] in
+  Lwt_sequence.iter_node_l Lwt_sequence.remove cvar;
+  Lwt.as_thread trace_thread (fun () ->
+    List.iter (fun wakener -> Lwt.wakeup_later_exn wakener exn) wakeners
+  )

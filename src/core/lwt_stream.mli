@@ -155,10 +155,10 @@ val to_string : char t -> string Lwt.t
   (** Returns the word composed of all characters of the given
       stream *)
 
-(** {2 Data retreival} *)
+(** {2 Data retrieval} *)
 
 exception Empty
-  (** Exception raised when trying to retreive data from an empty
+  (** Exception raised when trying to retrieve data from an empty
       stream. *)
 
 val peek : 'a t -> 'a option Lwt.t
@@ -215,22 +215,40 @@ val junk_old : 'a t -> unit Lwt.t
 
 val get_available : 'a t -> 'a list
   (** [get_available st] returns all available elements of [l] without
-      blocking *)
+      blocking. *)
 
 val get_available_up_to : int -> 'a t -> 'a list
   (** [get_available_up_to n st] returns up to [n] elements of [l]
-      without blocking *)
+      without blocking. *)
 
 val is_empty : 'a t -> bool Lwt.t
-  (** [is_empty st] returns wether the given stream is empty *)
+  (** [is_empty st] returns whether the given stream is empty. *)
+
+val is_closed : 'a t -> bool
+  (** [is_closed st] returns whether the given stream has been closed. A closed
+      stream is not necessarily empty. It may still contain unread elements. If
+      [is_closed s = true], then all subsequent reads until the end of the
+      stream are guaranteed not to block.
+
+      @since 2.6.0 *)
+
+val closed : 'a t -> unit Lwt.t
+  (** [closed st] returns a thread that will sleep until the stream has been
+      closed.
+
+      @since 2.6.0 *)
 
 val on_termination : 'a t -> (unit -> unit) -> unit
   (** [on_termination st f] executes [f] when the end of the stream [st]
-      is reached. Note that the stream may still contains elements if
-      {!peek} or similar was used. *)
+      is reached. Note that the stream may still contain elements if
+      {!peek} or similar was used.
+
+      @deprecated Use [closed]. *)
 
 val on_terminate : 'a t -> (unit -> unit) -> unit
-  (* Deprecated, use [on_termination] *)
+  (** Same as [on_termination].
+
+      @deprecated Use [closed]. *)
 
 (** {2 Stream transversal} *)
 
