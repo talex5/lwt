@@ -218,11 +218,14 @@ external wakener_repr : 'a u -> 'a thread_repr = "%identity"
 let max_removed = 42
 
 (** Change the tracing context temporarily to another thread. *)
-let as_thread tid fn =
+let as_thread tid ~signal fn =
   let (_, old_tid) as old_data = !current_data in
   try
     current_data := (Int_map.empty, tid);
-    !tracer.note_signal old_tid;
+    if signal then
+      !tracer.note_signal old_tid
+    else
+      !tracer.note_switch ();
     let r = fn () in
     switch_to_thread old_data;
     r
@@ -916,18 +919,29 @@ let poll t =
     | Repr _ -> assert false
 
 let async f =
+  (* For tracing purposes, invent a virtual thread to represent the async operation *)
+  let tid = next_id Async in
+  as_thread tid ~signal:false @@ fun () ->
   let t = repr (try f () with exn -> fail exn) in
   match t.state with
     | Return _ ->
-        ()
+        !tracer.note_resolved ~ex:None tid
     | Fail exn ->
+        !tracer.note_resolved ~ex:(Some exn) tid;
         !async_exception_hook exn
     | Sleep sleeper ->
-        add_immutable_waiter sleeper
-          (function
-             | Return _ -> ()
-             | Fail exn -> !async_exception_hook exn
-             | _ -> assert false)
+        let data = !current_data in
+        add_immutable_waiter sleeper (fun result ->
+          switch_to_thread data;
+          !tracer.note_read t.tid;
+          match result with
+             | Return _ ->
+               !tracer.note_resolved ~ex:None tid
+             | Fail exn ->
+               !tracer.note_resolved ~ex:(Some exn) tid;
+               !async_exception_hook exn
+             | _ -> assert false
+          )
     | Repr _ ->
         assert false
 

@@ -42,7 +42,7 @@ let create ?label () =
   (Lwt_sequence.create (), trace_thread, label)
 
 let wait ?mutex (cvar, trace_thread, label) =
-  let waiter = Lwt.as_thread trace_thread (fun () -> Lwt.add_task_r cvar) in
+  let waiter = Lwt.as_thread trace_thread ~signal:true (fun () -> Lwt.add_task_r cvar) in
   begin match label with
   | None -> ()
   | Some label -> Lwt_tracing.(!tracer.note_label) (Lwt.id_of_thread waiter) label end;
@@ -60,20 +60,20 @@ let wait ?mutex (cvar, trace_thread, label) =
 
 let signal (cvar, trace_thread, _) arg =
   try
-    Lwt.as_thread trace_thread (fun () -> Lwt.wakeup_later (Lwt_sequence.take_l cvar) arg)
+    Lwt.as_thread trace_thread ~signal:true (fun () -> Lwt.wakeup_later (Lwt_sequence.take_l cvar) arg)
   with Lwt_sequence.Empty ->
     ()
 
 let broadcast (cvar, trace_thread, _) arg =
   let wakeners = Lwt_sequence.fold_r (fun x l -> x :: l) cvar [] in
   Lwt_sequence.iter_node_l Lwt_sequence.remove cvar;
-  Lwt.as_thread trace_thread (fun () ->
+  Lwt.as_thread trace_thread ~signal:true (fun () ->
     List.iter (fun wakener -> Lwt.wakeup_later wakener arg) wakeners
   )
 
 let broadcast_exn (cvar, trace_thread, _) exn =
   let wakeners = Lwt_sequence.fold_r (fun x l -> x :: l) cvar [] in
   Lwt_sequence.iter_node_l Lwt_sequence.remove cvar;
-  Lwt.as_thread trace_thread (fun () ->
+  Lwt.as_thread trace_thread ~signal:true (fun () ->
     List.iter (fun wakener -> Lwt.wakeup_later_exn wakener exn) wakeners
   )
