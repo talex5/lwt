@@ -37,6 +37,7 @@ type thread_type =
   | On_termination
   | On_any
   | Ignore_result
+  | Async
 
 type tracer = {
   note_created : thread_id -> thread_type -> unit;

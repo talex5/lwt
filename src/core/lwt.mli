@@ -516,6 +516,6 @@ val abandon_wakeups : unit -> unit
 val id_of_thread : 'a t -> Lwt_tracing.thread_id
 val current_id : unit -> Lwt_tracing.thread_id
 
+val as_thread : Lwt_tracing.thread_id -> signal:bool -> (unit -> 'a) -> 'a
 (** Change the tracing context temporarily to another thread.
- * A signal from the previous thread to the new one is reported. *)
-val as_thread : Lwt_tracing.thread_id -> (unit -> 'a) -> 'a
+    If [signal] is [true], a signal from the previous thread to the new one is reported. *)
