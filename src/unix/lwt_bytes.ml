@@ -36,7 +36,9 @@ external set : t -> int -> char -> unit = "%caml_ba_set_1"
 external unsafe_get : t -> int -> char = "%caml_ba_unsafe_ref_1"
 external unsafe_set : t -> int -> char -> unit = "%caml_ba_unsafe_set_1"
 
+[@@@ocaml.warning "-3"]
 external unsafe_fill : t -> int -> int -> char -> unit = "lwt_unix_fill_bytes" "noalloc"
+[@@@ocaml.warning "+3"]
 
 let fill bytes ofs len ch =
   if ofs < 0 || len < 0 || ofs > length bytes - len then
@@ -48,9 +50,11 @@ let fill bytes ofs len ch =
    | Blitting                                                        |
    +-----------------------------------------------------------------+ *)
 
+[@@@ocaml.warning "-3"]
 external unsafe_blit_from_bytes : Bytes.t -> int -> t -> int -> int -> unit = "lwt_unix_blit_from_bytes" "noalloc"
 external unsafe_blit_to_bytes : t -> int -> Bytes.t -> int -> int -> unit = "lwt_unix_blit_to_bytes" "noalloc"
 external unsafe_blit : t -> int -> t -> int -> int -> unit = "lwt_unix_blit" "noalloc"
+[@@@ocaml.warning "+3"]
 
 let blit_from_bytes src_buf src_ofs dst_buf dst_ofs len =
   if (len < 0
@@ -165,15 +169,15 @@ type io_vector = {
   iov_length : int;
 }
 
-let io_vector ~buffer ~offset ~length = {
+let io_vector ~buffer ~offset ~length = ({
   iov_buffer = buffer;
   iov_offset = offset;
   iov_length = length;
-}
+} : io_vector)
 
 let check_io_vectors func_name iovs =
   List.iter
-    (fun iov ->
+    (fun (iov : io_vector) ->
        if iov.iov_offset < 0
          || iov.iov_length < 0
          || iov.iov_offset > length iov.iov_buffer - iov.iov_length then
@@ -220,8 +224,15 @@ let sendto fd buf pos len flags addr =
 
 let map_file ~fd ?pos ~shared ?(size=(-1)) () =
   Array1.map_file fd ?pos char c_layout shared size
+    [@@ocaml.warning "-3"]
+    (* BigArray.Array1.map_file is deprecated in OCaml 4.05; however, the
+       suggested replacement requires 4.05 (Lwt still supports 4.02). The
+       replacement also has slighty different exception semantics; see
+       deprecation warning on BigArray.Array1.map_file. *)
 
+[@@@ocaml.warning "-3"]
 external mapped : t -> bool = "lwt_unix_mapped" "noalloc"
+[@@@ocaml.warning "+3"]
 
 type advice =
   | MADV_NORMAL

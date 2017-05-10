@@ -26,6 +26,8 @@
 
 #define ARGS(args...) args
 
+#include <caml/version.h>
+#include <caml/unixsupport.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/time.h>
@@ -90,16 +92,26 @@ CAMLprim value lwt_unix_get_page_size(value Unit)
 #ifdef __CYGWIN__
 LWT_NOT_AVAILABLE4(unix_mincore)
 #else
+
+#ifdef HAVE_BSD_MINCORE
+#   define MINCORE_VECTOR_TYPE char
+#else
+#   define MINCORE_VECTOR_TYPE unsigned char
+#endif
+
 CAMLprim value lwt_unix_mincore(value val_buffer, value val_offset, value val_length, value val_states)
 {
   long len = Wosize_val(val_states);
-  unsigned char vec[len];
+  MINCORE_VECTOR_TYPE vec[len];
   mincore((char*)Caml_ba_data_val(val_buffer) + Long_val(val_offset), Long_val(val_length), vec);
   long i;
   for (i = 0; i < len; i++)
     Field(val_states, i) = Val_bool(vec[i] & 1);
   return Val_unit;
 }
+
+#undef MINCORE_VECTOR_TYPE
+
 #endif
 
 /* +-----------------------------------------------------------------+
@@ -137,6 +149,286 @@ CAMLprim value lwt_unix_bytes_write(value val_fd, value val_buf, value val_ofs, 
   if (ret == -1) uerror("write", Nothing);
   return Val_long(ret);
 }
+
+
+
+/* readv, writev */
+
+/* For blocking readv calls, arrays of this struct associate temporary buffers
+   which are passed to the readv system call with the OCaml bytes buffers into
+   which the data must ultimately be copied. */
+struct readv_copy_to {
+    /* Length of the temporary buffer. */
+    size_t length;
+    /* Offset into the OCaml buffer to which the temporary buffer must be
+       copied. */
+    size_t offset;
+    value caml_buffer;
+    char *temporary_buffer;
+};
+
+/* Tags for each of the constructors of type Lwt_unix.IO_vectors._buffer. The
+   order must correspond to that in lwt_unix.ml. */
+enum {IO_vectors_bytes, IO_vectors_bigarray};
+
+/* Given an uninitialized array of iovec structures `iovecs`, and an OCaml value
+   `io_vectors` of type Lwt_unix.IO_vectors._io_vector list, writes pointers to
+   the first `count` buffer slices in `io_vectors` to `iovecs`. Each buffer
+   slice may be a bytes buffer or a Bigarray buffer.
+
+   In case `buffer_copies` is not NULL, a fresh buffer is allocated on the heap
+   for each bytes buffer, and the contents of the bytes buffer are copied there.
+   Pointers to these copies are written to `iovecs`, instead of pointers to the
+   original buffers. The pointers are also stored as an array at
+   `buffer_copies`, so that they can be freed later. This mechanism is used when
+   `iovecs` will be passed to a blocking writev call, which is run by Lwt in a
+   worker thread. In that case, the original, uncopied bytes buffers may be
+   moved by the garbage collector before the I/O call runs, or while it is
+   running.
+
+   Similarly, in case `read_buffers` is not NULL, `flatten_io_vectors` allocates
+   a temporary buffer for each OCaml bytes buffer. Pointers to the buffers are
+   stored in `read_buffers`, together with GC roots for the corresponding OCaml
+   buffers. */
+static void flatten_io_vectors(
+    struct iovec *iovecs, value io_vectors, size_t count, char **buffer_copies,
+    struct readv_copy_to *read_buffers)
+{
+    CAMLparam1(io_vectors);
+    CAMLlocal3(node, io_vector, buffer);
+
+    size_t index;
+    size_t copy_index = 0;
+
+    for (node = io_vectors, index = 0; index < count;
+         node = Field(node, 1), ++index) {
+
+        io_vector = Field(node, 0);
+
+        intnat offset = Long_val(Field(io_vector, 1));
+        intnat length = Long_val(Field(io_vector, 2));
+
+        iovecs[index].iov_len = length;
+
+        buffer = Field(Field(io_vector, 0), 0);
+        if (Tag_val(Field(io_vector, 0)) == IO_vectors_bytes) {
+            if (buffer_copies != NULL) {
+                buffer_copies[copy_index] = lwt_unix_malloc(length);
+                memcpy(
+                    buffer_copies[copy_index],
+                    &Byte(String_val(buffer), offset), length);
+
+                iovecs[index].iov_base = buffer_copies[copy_index];
+                ++copy_index;
+            }
+            else if (read_buffers != NULL) {
+                read_buffers[copy_index].temporary_buffer =
+                    lwt_unix_malloc(length);
+                read_buffers[copy_index].length = length;
+                read_buffers[copy_index].offset = offset;
+                read_buffers[copy_index].caml_buffer = buffer;
+                caml_register_generational_global_root(
+                    &read_buffers[copy_index].caml_buffer);
+
+                iovecs[index].iov_base =
+                    read_buffers[copy_index].temporary_buffer;
+                ++copy_index;
+            }
+            else
+                iovecs[index].iov_base = &Byte(String_val(buffer), offset);
+        }
+        else
+            iovecs[index].iov_base = &((char*)Caml_ba_data_val(buffer))[offset];
+    }
+
+    if (buffer_copies != NULL)
+        buffer_copies[copy_index] = NULL;
+    if (read_buffers != NULL)
+        read_buffers[copy_index].temporary_buffer = NULL;
+
+    CAMLreturn0;
+}
+
+CAMLprim value lwt_unix_iov_max(value unit)
+{
+    return Val_int(IOV_MAX);
+}
+
+/* writev */
+
+/* writev primitive for non-blocking file descriptors. */
+CAMLprim value lwt_unix_writev(value fd, value io_vectors, value val_count)
+{
+    CAMLparam3(fd, io_vectors, val_count);
+
+    size_t count = Long_val(val_count);
+
+    /* Assemble iovec structures on the stack. No data is copied. */
+    struct iovec iovecs[count];
+    flatten_io_vectors(iovecs, io_vectors, count, NULL, NULL);
+
+    ssize_t result = writev(Int_val(fd), iovecs, count);
+
+    if (result == -1)
+        uerror("writev", Nothing);
+
+    CAMLreturn(Val_long(result));
+}
+
+/* Job and writev primitives for blocking file descriptors. */
+struct job_writev {
+    struct lwt_unix_job job;
+    int fd;
+    int error_code;
+    ssize_t result;
+    size_t count;
+    /* Heap-allocated iovec structures. */
+    struct iovec *iovecs;
+    /* Heap-allocated array of pointers to heap-allocated copies of bytes buffer
+       slices. This array is NULL-terminated. */
+    char **buffer_copies;
+};
+
+static void worker_writev(struct job_writev *job)
+{
+    job->result = writev(job->fd, job->iovecs, job->count);
+    job->error_code = errno;
+}
+
+static value result_writev(struct job_writev *job)
+{
+    char **buffer_copy;
+    for (buffer_copy = job->buffer_copies; *buffer_copy != NULL;
+         ++buffer_copy) {
+
+        free(*buffer_copy);
+    }
+    free(job->buffer_copies);
+    free(job->iovecs);
+
+    ssize_t result = job->result;
+    LWT_UNIX_CHECK_JOB(job, result < 0, "writev");
+    lwt_unix_free_job(&job->job);
+    return Val_long(result);
+}
+
+CAMLprim value lwt_unix_writev_job(value fd, value io_vectors, value val_count)
+{
+    CAMLparam3(fd, io_vectors, val_count);
+
+    LWT_UNIX_INIT_JOB(job, writev, 0);
+    job->fd = Int_val(fd);
+    job->count = Long_val(val_count);
+
+    /* Assemble iovec structures on the heap and copy bytes buffer slices. */
+    job->iovecs = lwt_unix_malloc(job->count * sizeof(struct iovec));
+    /* The extra (+ 1) pointer is for the NULL terminator, in case all buffer
+       slices are in bytes buffers. */
+    job->buffer_copies = lwt_unix_malloc((job->count + 1) * sizeof(char*));
+    flatten_io_vectors(
+        job->iovecs, io_vectors, job->count, job->buffer_copies, NULL);
+
+    CAMLreturn(lwt_unix_alloc_job(&job->job));
+}
+
+/* readv */
+
+/* readv primitive for non-blocking file descriptors. */
+CAMLprim value lwt_unix_readv(value fd, value io_vectors, value val_count)
+{
+    CAMLparam3(fd, io_vectors, val_count);
+
+    size_t count = Long_val(val_count);
+
+    /* Assemble iovec structures on the stack. */
+    struct iovec iovecs[count];
+    flatten_io_vectors(iovecs, io_vectors, count, NULL, NULL);
+
+    /* Data is read directly into the buffers. There is no need to copy
+       afterwards. */
+    ssize_t result = readv(Int_val(fd), iovecs, count);
+
+    if (result == -1)
+      uerror("readv", Nothing);
+
+    CAMLreturn(Val_long(result));
+}
+
+/* Job and readv primitives for blocking file descriptors. */
+struct job_readv {
+    struct lwt_unix_job job;
+    int fd;
+    int error_code;
+    ssize_t result;
+    size_t count;
+    /* Heap-allocated iovec structures. */
+    struct iovec *iovecs;
+    /* Data to be read into bytes buffers is first read into temporary buffers
+       on the C heap. This is an array of descriptors for copying that data into
+       the actual bytes buffers. The array is terminated by a descriptor whose
+       temporary_buffer member is NULL. */
+    struct readv_copy_to buffers[];
+};
+
+static void worker_readv(struct job_readv *job)
+{
+    job->result = readv(job->fd, job->iovecs, job->count);
+    job->error_code = errno;
+}
+
+static value result_readv(struct job_readv *job)
+{
+    struct readv_copy_to *read_buffer;
+
+    /* If the read is successful, copy data to the OCaml buffers. */
+    if (job->result != -1) {
+        for (read_buffer = job->buffers; read_buffer->temporary_buffer != NULL;
+             ++read_buffer) {
+
+            memcpy(
+                &Byte(String_val(read_buffer->caml_buffer),
+                      read_buffer->offset),
+                read_buffer->temporary_buffer,
+                read_buffer->length);
+        }
+    }
+
+    /* Free heap-allocated structures and buffers. */
+    for (read_buffer = job->buffers; read_buffer->temporary_buffer != NULL;
+         ++read_buffer) {
+
+        free(read_buffer->temporary_buffer);
+        caml_remove_generational_global_root(&read_buffer->caml_buffer);
+    }
+    free(job->iovecs);
+
+    /* Decide on the actual result. */
+    ssize_t result = job->result;
+    LWT_UNIX_CHECK_JOB(job, result < 0, "readv");
+    lwt_unix_free_job(&job->job);
+    return Val_long(result);
+}
+
+CAMLprim value lwt_unix_readv_job(value fd, value io_vectors, value val_count)
+{
+    CAMLparam3(fd, io_vectors, val_count);
+
+    size_t count = Long_val(val_count);
+
+    /* The extra struct readv_copy_to (+ 1) is for the final terminator, in case
+       all buffer slices are in bytes buffers. */
+    LWT_UNIX_INIT_JOB(job, readv, sizeof(struct readv_copy_to) * (count + 1));
+    job->fd = Int_val(fd);
+    job->count = count;
+
+    /* Assemble iovec structures on the heap. */
+    job->iovecs = lwt_unix_malloc(sizeof(struct iovec) * count);
+    flatten_io_vectors(job->iovecs, io_vectors, count, NULL, job->buffers);
+
+    CAMLreturn(lwt_unix_alloc_job(&job->job));
+}
+
+
 
 /* +-----------------------------------------------------------------+
    | recv/send                                                       |
@@ -188,16 +480,6 @@ value lwt_unix_bytes_send(value fd, value buf, value ofs, value len, value flags
 
 extern int socket_domain_table[];
 extern int socket_type_table[];
-
-union sock_addr_union {
-  struct sockaddr s_gen;
-  struct sockaddr_un s_unix;
-  struct sockaddr_in s_inet;
-  struct sockaddr_in6 s_inet6;
-};
-
-CAMLexport value alloc_sockaddr (union sock_addr_union * addr /*in*/,
-                                 socklen_t addr_len, int close_on_error);
 
 value lwt_unix_recvfrom(value fd, value buf, value ofs, value len, value flags)
 {
@@ -843,29 +1125,25 @@ static int open_flag_table[] = {
   O_DSYNC,
   O_SYNC,
   O_RSYNC,
-  0,
-#ifdef O_CLOEXEC
-  O_CLOEXEC
-#else
-#define NEED_CLOEXEC_EMULATION
-  0
-#endif
+  0, /* O_SHARE_DELETE, Windows-only */
+  0, /* O_CLOEXEC, treated specially */
+  0  /* O_KEEPEXEC, treated specially */
 };
 
-#ifdef NEED_CLOEXEC_EMULATION
-static int open_cloexec_table[14] = {
+enum { CLOEXEC = 1, KEEPEXEC = 2 };
+
+static int open_cloexec_table[15] = {
   0, 0, 0, 0, 0, 0, 0, 0,
   0, 0, 0, 0,
   0,
-  1
+  CLOEXEC, KEEPEXEC
 };
-#endif
 
 struct job_open {
   struct lwt_unix_job job;
   int flags;
   int perms;
-  int fd;
+  int fd; /* will have value CLOEXEC or KEEPEXEC on entry to worker_open */
   int blocking;
   int error_code;
   char *name;
@@ -875,10 +1153,28 @@ struct job_open {
 static void worker_open(struct job_open *job)
 {
   int fd;
+  int cloexec;
+
+  if (job->fd & CLOEXEC)
+    cloexec = 1;
+  else if (job->fd & KEEPEXEC)
+    cloexec = 0;
+  else
+#if OCAML_VERSION_MAJOR >= 4 && OCAML_VERSION_MINOR >= 5
+    cloexec = unix_cloexec_default;
+#else
+    cloexec = 0;
+#endif
+
+#if defined(O_CLOEXEC)
+  if (cloexec) job->flags |= O_CLOEXEC;
+#endif
+
   fd = open(job->name, job->flags, job->perms);
-#if defined(NEED_CLOEXEC_EMULATION) && defined(FD_CLOEXEC)
-  if (fd >= 0 && job->fd) {
+#if !defined(O_CLOEXEC) && defined(FD_CLOEXEC)
+  if (fd >= 0 && cloexec) {
     int flags = fcntl(fd, F_GETFD, 0);
+
     if (flags == -1 ||
         fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1) {
       int serrno = errno;
@@ -913,9 +1209,7 @@ static value result_open(struct job_open *job)
 CAMLprim value lwt_unix_open_job(value name, value flags, value perms)
 {
   LWT_UNIX_INIT_JOB_STRING(job, open, 0, name);
-#ifdef NEED_CLOEXEC_EMULATION
-  job->fd = caml_convert_flag_list(flags, open_cloexec_table) != 0;
-#endif
+  job->fd = caml_convert_flag_list(flags, open_cloexec_table);
   job->flags = caml_convert_flag_list(flags, open_flag_table);
   job->perms = Int_val(perms);
   return lwt_unix_alloc_job(&(job->job));
@@ -1433,6 +1727,22 @@ CAMLprim value lwt_unix_closedir_job(value dir)
   return lwt_unix_alloc_job(&job->job);
 }
 
+/* Directory handle validity. */
+
+CAMLprim value lwt_unix_valid_dir(value dir)
+{
+    CAMLparam1(dir);
+    int result = DIR_Val(dir) == NULL ? 0 : 1;
+    CAMLreturn(Val_int(result));
+}
+
+CAMLprim value lwt_unix_invalidate_dir(value dir)
+{
+    CAMLparam1(dir);
+    DIR_Val(dir) = NULL;
+    CAMLreturn(Val_unit);
+}
+
 /* +-----------------------------------------------------------------+
    | JOB: rewinddir                                                  |
    +-----------------------------------------------------------------+ */
@@ -1460,6 +1770,24 @@ CAMLprim value lwt_unix_rewinddir_job(value dir)
   return lwt_unix_alloc_job(&(job->job));
 }
 
+/* struct dirent size */
+
+/* Some kind of estimate of the true size of a dirent structure, including the
+   space used for the name. This is controversial, and there is an ongoing
+   discussion (see Internet) about deprecating readdir_r because of the need to
+   guess the size in this way. */
+static size_t dirent_size(DIR *dir)
+{
+    size_t size =
+        offsetof(struct dirent, d_name) +
+        fpathconf(dirfd(dir), _PC_NAME_MAX) + 1;
+
+    if (size < sizeof(struct dirent))
+        size = sizeof(struct dirent);
+
+    return size;
+}
+
 /* +-----------------------------------------------------------------+
    | JOB: readdir                                                    |
    +-----------------------------------------------------------------+ */
@@ -1474,7 +1802,7 @@ struct job_readdir {
 
 static void worker_readdir(struct job_readdir *job)
 {
-  job->entry = lwt_unix_malloc(offsetof(struct dirent, d_name) + fpathconf(dirfd(job->dir), _PC_NAME_MAX) + 1);
+  job->entry = lwt_unix_malloc(dirent_size(job->dir));
   job->result = readdir_r(job->dir, job->entry, &job->ptr);
 }
 
@@ -1513,37 +1841,25 @@ struct job_readdir_n {
   DIR *dir;
   long count;
   int error_code;
-  struct dirent *entries[];
+  struct dirent entries[];
 };
 
 static void worker_readdir_n(struct job_readdir_n *job)
 {
-  size_t size = offsetof(struct dirent, d_name) + fpathconf(dirfd(job->dir), _PC_NAME_MAX) + 1;
   long i;
   for(i = 0; i < job->count; i++) {
     struct dirent *ptr;
-    struct dirent *entry = (struct dirent *)lwt_unix_malloc(size);
-
-    int result = readdir_r(job->dir, entry, &ptr);
+    int result = readdir_r(job->dir, &job->entries[i], &ptr);
 
     /* An error happened. */
     if (result != 0) {
-      /* Free already read entries. */
-      free(entry);
-      long j;
-      for(j = 0; j < i; j++) free(job->entries[j]);
-      /* Return an error. */
       job->error_code = result;
       return;
     }
 
     /* End of directory reached */
-    if (ptr == NULL) {
-      free(entry);
+    if (ptr == NULL)
       break;
-    }
-
-    job->entries[i] = entry;
   }
 
   job->count = i;
@@ -1562,8 +1878,7 @@ static value result_readdir_n(struct job_readdir_n *job)
     result = caml_alloc(job->count, 0);
     long i;
     for(i = 0; i < job->count; i++) {
-      Store_field(result, i, caml_copy_string(job->entries[i]->d_name));
-      free(job->entries[i]);
+      Store_field(result, i, caml_copy_string(job->entries[i].d_name));
     }
     lwt_unix_free_job(&job->job);
     CAMLreturn(result);
@@ -1573,9 +1888,12 @@ static value result_readdir_n(struct job_readdir_n *job)
 CAMLprim value lwt_unix_readdir_n_job(value val_dir, value val_count)
 {
   long count = Long_val(val_count);
-  LWT_UNIX_INIT_JOB(job, readdir_n, sizeof(struct dirent*) * count);
-  job->dir = DIR_Val(val_dir);
+  DIR *dir = DIR_Val(val_dir);
+
+  LWT_UNIX_INIT_JOB(job, readdir_n, dirent_size(dir) * count);
+  job->dir = dir;
   job->count = count;
+
   return lwt_unix_alloc_job(&job->job);
 }
 
@@ -2144,7 +2462,7 @@ hostent_dup(struct hostent *orig)
 nomem3:
   c_free_string_array(h->h_aliases);
 nomem2:
-  free(h->h_name);
+  free((char*)h->h_name);
 nomem1:
   free(h);
   return NULL;
@@ -2156,7 +2474,7 @@ hostent_free(struct hostent *h)
   if ( h ){
     c_free_string_array(h->h_addr_list);
     c_free_string_array(h->h_aliases);
-    free(h->h_name);
+    free((char*)h->h_name);
     free(h);
   }
 }
@@ -2656,6 +2974,39 @@ CAMLprim value lwt_unix_getnameinfo_job(value sockaddr, value opts)
   get_sockaddr(sockaddr, &job->addr, &job->addr_len);
   job->opts = caml_convert_flag_list(opts, getnameinfo_flag_table);
   return lwt_unix_alloc_job(&job->job);
+}
+
+/* bind */
+
+struct job_bind {
+    struct lwt_unix_job job;
+    int fd;
+    union sock_addr_union addr;
+    socklen_param_type addr_len;
+    int result;
+    int error_code;
+};
+
+static void worker_bind(struct job_bind *job)
+{
+    job->result = bind(job->fd, &job->addr.s_gen, job->addr_len);
+    job->error_code = errno;
+}
+
+static value result_bind(struct job_bind *job)
+{
+    LWT_UNIX_CHECK_JOB(job, job->result != 0, "bind");
+    lwt_unix_free_job(&job->job);
+    return Val_unit;
+}
+
+CAMLprim value lwt_unix_bind_job(value fd, value address)
+{
+    LWT_UNIX_INIT_JOB(job, bind, 0);
+    job->fd = Int_val(fd);
+    get_sockaddr(address, &job->addr, &job->addr_len);
+
+    return lwt_unix_alloc_job(&job->job);
 }
 
 /* +-----------------------------------------------------------------+

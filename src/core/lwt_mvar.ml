@@ -32,7 +32,7 @@
 type 'a t = {
   label : string option;
 
-  mutable contents : 'a option;
+  mutable mvar_contents : 'a option;
   (* Current contents *)
 
   writers : ('a * unit Lwt.u) Lwt_sequence.t;
@@ -44,22 +44,22 @@ type 'a t = {
 
 let create_empty ?label () =
   { label;
-    contents = None;
+    mvar_contents = None;
     writers = Lwt_sequence.create ();
     readers = Lwt_sequence.create () }
 
 let create ?label v =
   { label;
-    contents = Some v;
+    mvar_contents = Some v;
     writers = Lwt_sequence.create ();
     readers = Lwt_sequence.create () }
 
 let put mvar v =
-  match mvar.contents with
+  match mvar.mvar_contents with
     | None ->
         begin match Lwt_sequence.take_opt_l mvar.readers with
           | None ->
-              mvar.contents <- Some v
+              mvar.mvar_contents <- Some v
           | Some w ->
               Lwt.wakeup_later w v
         end;
@@ -74,14 +74,14 @@ let put mvar v =
         res
 
 let take mvar =
-  match mvar.contents with
+  match mvar.mvar_contents with
     | Some v ->
         begin match Lwt_sequence.take_opt_l mvar.writers with
           | Some(v', w) ->
-              mvar.contents <- Some v';
+              mvar.mvar_contents <- Some v';
               Lwt.wakeup_later w ()
           | None ->
-              mvar.contents <- None
+              mvar.mvar_contents <- None
         end;
         Lwt.return v
     | None ->

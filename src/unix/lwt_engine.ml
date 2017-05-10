@@ -70,19 +70,25 @@ class virtual abstract = object(self)
     (* Sequence of timers. *)
 
   method destroy =
-    Lwt_sequence.iter_l (fun (fd, f, g, ev) -> stop_event ev) readables;
-    Lwt_sequence.iter_l (fun (fd, f, g, ev) -> stop_event ev) writables;
-    Lwt_sequence.iter_l (fun (delay, repeat, f, g, ev) -> stop_event ev) timers;
+    Lwt_sequence.iter_l (fun (_fd, _f, _g, ev) -> stop_event ev) readables;
+    Lwt_sequence.iter_l (fun (_fd, _f, _g, ev) -> stop_event ev) writables;
+    Lwt_sequence.iter_l (fun (_delay, _repeat, _f, _g, ev) -> stop_event ev)
+      timers;
     self#cleanup
 
   method transfer (engine : abstract) =
-    Lwt_sequence.iter_l (fun (fd, f, g, ev) -> stop_event ev; ev := !(engine#on_readable fd f)) readables;
-    Lwt_sequence.iter_l (fun (fd, f, g, ev) -> stop_event ev; ev := !(engine#on_writable fd f)) writables;
-    Lwt_sequence.iter_l (fun (delay, repeat, f, g, ev) -> stop_event ev; ev := !(engine#on_timer delay repeat f)) timers
+    Lwt_sequence.iter_l (fun (fd, f, _g, ev) ->
+      stop_event ev; ev := !(engine#on_readable fd f)) readables;
+    Lwt_sequence.iter_l (fun (fd, f, _g, ev) ->
+      stop_event ev; ev := !(engine#on_writable fd f)) writables;
+    Lwt_sequence.iter_l (fun (delay, repeat, f, _g, ev) ->
+      stop_event ev; ev := !(engine#on_timer delay repeat f)) timers
 
   method fake_io fd =
-    Lwt_sequence.iter_l (fun (fd', f, g, stop) -> if fd = fd' then g ()) readables;
-    Lwt_sequence.iter_l (fun (fd', f, g, stop) -> if fd = fd' then g ()) writables
+    Lwt_sequence.iter_l (fun (fd', _f, g, _stop) ->
+      if fd = fd' then g ()) readables;
+    Lwt_sequence.iter_l (fun (fd', _f, g, _stop) ->
+      if fd = fd' then g ()) writables
 
   method on_readable fd f =
     let ev = ref _fake_event in
@@ -128,7 +134,38 @@ type ev_loop
 type ev_io
 type ev_timer
 
-external ev_init : unit -> ev_loop = "lwt_libev_init"
+module Ev_backend =
+struct
+  type t =
+    | EV_DEFAULT
+    | EV_SELECT
+    | EV_POLL
+    | EV_EPOLL
+    | EV_KQUEUE
+    | EV_DEVPOLL
+    | EV_PORT
+
+  let default = EV_DEFAULT
+  let select = EV_SELECT
+  let poll = EV_POLL
+  let epoll = EV_EPOLL
+  let kqueue = EV_KQUEUE
+  let devpoll = EV_DEVPOLL
+  let port = EV_PORT
+
+  let name = function
+    | EV_DEFAULT -> "EV_DEFAULT"
+    | EV_SELECT -> "EV_SELECT"
+    | EV_POLL -> "EV_POLL"
+    | EV_EPOLL -> "EV_EPOLL"
+    | EV_KQUEUE -> "EV_KQUEUE"
+    | EV_DEVPOLL -> "EV_DEVPOLL"
+    | EV_PORT -> "EV_PORT"
+
+  let pp fmt t = Format.pp_print_string fmt (name t)
+end
+
+external ev_init : Ev_backend.t -> ev_loop = "lwt_libev_init"
 external ev_stop : ev_loop -> unit = "lwt_libev_stop"
 external ev_loop : ev_loop -> bool -> unit = "lwt_libev_loop"
 external ev_unloop : ev_loop -> unit = "lwt_libev_unloop"
@@ -138,10 +175,10 @@ external ev_io_stop : ev_loop -> ev_io -> unit = "lwt_libev_io_stop"
 external ev_timer_init : ev_loop -> float -> bool -> (unit -> unit) -> ev_timer = "lwt_libev_timer_init"
 external ev_timer_stop : ev_loop -> ev_timer -> unit  = "lwt_libev_timer_stop"
 
-class libev = object
+class libev ?(backend=Ev_backend.default) () = object
   inherit abstract
 
-  val loop = ev_init ()
+  val loop = ev_init backend
   method loop = loop
 
   method private cleanup = ev_stop loop
@@ -166,6 +203,8 @@ class libev = object
     lazy(ev_timer_stop loop ev)
 end
 
+class libev_deprecated = libev ()
+
 (* +-----------------------------------------------------------------+
    | Select/poll based engines                                       |
    +-----------------------------------------------------------------+ *)
@@ -185,16 +224,17 @@ type sleeper = {
 module Sleep_queue =
   Lwt_pqueue.Make(struct
                     type t = sleeper
-                    let compare { time = t1 } { time = t2 } = compare t1 t2
+                    let compare {time = t1; _} {time = t2; _} = compare t1 t2
                   end)
+  [@@ocaml.warning "-3"]
 
 module Fd_map = Map.Make(struct type t = Unix.file_descr let compare = compare end)
 
 let rec restart_actions sleep_queue now =
   match Sleep_queue.lookup_min sleep_queue with
-    | Some{ stopped = true } ->
+    | Some{ stopped = true; _ } ->
         restart_actions (Sleep_queue.remove_min sleep_queue) now
-    | Some{ time = time; action = action } when time <= now ->
+    | Some{ time = time; action = action; _ } when time <= now ->
         (* We have to remove the sleeper to the queue before performing
            the action. The action can change the sleeper's time, and this
            might break the priority queue invariant if the sleeper is
@@ -207,9 +247,9 @@ let rec restart_actions sleep_queue now =
 
 let rec get_next_timeout sleep_queue =
   match Sleep_queue.lookup_min sleep_queue with
-    | Some{ stopped = true } ->
+    | Some{ stopped = true; _ } ->
         get_next_timeout (Sleep_queue.remove_min sleep_queue)
-    | Some{ time = time } ->
+    | Some{ time = time; _ } ->
         max 0. (time -. Unix.gettimeofday ())
     | None ->
         -1.
@@ -226,7 +266,7 @@ let invoke_actions fd map =
     | Some actions -> Lwt_sequence.iter_l (fun f -> f ()) actions
     | None -> ()
 
-class virtual select_or_poll_based = object(self)
+class virtual select_or_poll_based = object
   inherit abstract
 
   val mutable sleep_queue = Sleep_queue.empty
@@ -382,7 +422,7 @@ end
 
 let current =
   if Lwt_config._HAVE_LIBEV && Lwt_config.libev_default then
-    ref (new libev :> t)
+    ref (new libev () :> t)
   else
     ref (new select :> t)
 
@@ -402,3 +442,9 @@ let fake_io fd = !current#fake_io fd
 let readable_count () = !current#readable_count
 let writable_count () = !current#writable_count
 let timer_count () = !current#timer_count
+
+module Versioned =
+struct
+  class libev_1 = libev_deprecated
+  class libev_2 = libev
+end

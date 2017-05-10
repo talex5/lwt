@@ -126,7 +126,7 @@ end
 let clone s =
   (match s.source with
      | Push_bounded _ -> invalid_arg "Lwt_stream.clone"
-     | _ -> ());
+     | From _ | From_direct _ | Push _ -> ());
   {
     source = s.source;
     close = s.close;
@@ -170,38 +170,6 @@ let enqueue' e last =
 let enqueue e s =
   enqueue' e s.last
 
-let of_list l =
-  let l = ref l in
-  from_direct
-    (fun () ->
-       match !l with
-         | [] -> None
-         | x :: l' -> l := l'; Some x)
-
-let of_array a =
-  let len = Array.length a and i = ref 0 in
-  from_direct
-    (fun () ->
-       if !i = len then
-         None
-       else begin
-         let c = Array.unsafe_get a !i in
-         incr i;
-         Some c
-       end)
-
-let of_string s =
-  let len = String.length s and i = ref 0 in
-  from_direct
-    (fun () ->
-       if !i = len then
-         None
-       else begin
-         let c = String.unsafe_get s !i in
-         incr i;
-         Some c
-       end)
-
 let create_with_reference () =
   (* Create the source for notifications of new elements. *)
   let source, wakener_cell =
@@ -242,6 +210,21 @@ let create_with_reference () =
 let create () =
   let source, push, _ = create_with_reference () in
   (source, push)
+
+let of_iter iter i =
+  let stream, push = create () in
+  iter (fun x -> push (Some x)) i;
+  push None;
+  stream
+
+let of_list l =
+  of_iter List.iter l
+
+let of_array a =
+  of_iter Array.iter a
+
+let of_string s =
+  of_iter String.iter s
 
 (* Add the pending element to the queue and notify the blocked pushed.
 
@@ -415,7 +398,7 @@ let consume s node =
             info.pushb_count <- info.pushb_count - 1
           else
             notify_pusher info s.last
-      | _ ->
+      | From _ | From_direct _ | Push _ ->
           ()
   end
 
@@ -456,7 +439,9 @@ let rec get_exn_rec s node =
     Lwt.try_bind
       (fun () -> feed s)
       (fun () -> get_exn_rec s node)
-      (fun exn -> Lwt.return (Some (Error exn)))
+      (fun exn -> Lwt.return (Some (Error exn : _ result)))
+      (* TODO: Eliminate the above type constraint once the Lwt_stream.result
+         type is eliminated. *)
   else
     match node.data with
       | Some value ->
@@ -466,6 +451,22 @@ let rec get_exn_rec s node =
           Lwt.return_none
 
 let map_exn s = from (fun () -> get_exn_rec s s.node)
+
+let rec get_exn_rec' s node =
+  if node == !(s.last) then
+    Lwt.try_bind
+      (fun () -> feed s)
+      (fun () -> get_exn_rec' s node)
+      (fun exn -> Lwt.return (Some (Result.Error exn)))
+  else
+    match node.data with
+      | Some value ->
+          consume s node;
+          Lwt.return (Some (Result.Ok value))
+      | None ->
+          Lwt.return_none
+
+let wrap_exn s = from (fun () -> get_exn_rec' s s.node)
 
 let rec nget_rec node acc n s =
   if n <= 0 then
@@ -555,7 +556,7 @@ let last_new s =
     match Lwt.state thread with
       | Lwt.Return x ->
           last_new_rec node x s
-      | _ ->
+      | Lwt.Fail _ | Lwt.Sleep ->
           thread
   else
     match node.data with
@@ -975,7 +976,7 @@ let rec find_map_s_rec node f s =
 
 let find_map_s f s = find_map_s_rec s.node f s
 
-let rec combine s1 s2 =
+let combine s1 s2 =
   let next () =
     let t1 = get s1 and t2 = get s2 in
     t1 >>= fun n1 ->
@@ -1045,7 +1046,7 @@ let choose streams =
 let parse s f =
   (match s.source with
      | Push_bounded _ -> invalid_arg "Lwt_stream.parse"
-     | _ -> ());
+     | From _ | From_direct _ | Push _ -> ());
   let node = s.node in
   Lwt.catch
     (fun () -> f s)

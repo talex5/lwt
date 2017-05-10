@@ -163,29 +163,31 @@ external start_job : 'a job -> async_method -> bool = "lwt_unix_start_job"
     (* Starts the given job with given parameters. It returns [true]
        if the job is already terminated. *)
 
+[@@@ocaml.warning "-3"]
 external check_job : 'a job -> int -> bool = "lwt_unix_check_job" "noalloc"
     (* Check whether that a job has terminated or not. If it has not
        yet terminated, it is marked so it will send a notification
        when it finishes. *)
+[@@@ocaml.warning "+3"]
 
 (* For all running job, a waiter and a function to abort it. *)
 let jobs = Lwt_sequence.create ()
 
 let rec abort_jobs exn =
   match Lwt_sequence.take_opt_l jobs with
-    | Some (w, f) -> f exn; abort_jobs exn
+    | Some (_, f) -> f exn; abort_jobs exn
     | None -> ()
 
 let cancel_jobs () = abort_jobs Lwt.Canceled
 
 let wait_for_jobs () =
-  Lwt.join (Lwt_sequence.fold_l (fun (w, f) l -> w :: l) jobs [])
+  Lwt.join (Lwt_sequence.fold_l (fun (w, _) l -> w :: l) jobs [])
 
 let wrap_result f x =
   try
-    Lwt.make_value (f x)
+    Result.Ok (f x)
   with exn ->
-    Lwt.make_error exn
+    Result.Error exn
 
 let run_job_aux async_method job result =
   (* Starts the job. *)
@@ -241,9 +243,9 @@ external run_job_sync : 'a job -> 'a = "lwt_unix_run_job_sync"
 
 let self_result job =
   try
-    Lwt.make_value (self_result job)
+    Result.Ok (self_result job)
   with exn ->
-    Lwt.make_error exn
+    Result.Error exn
 
 let run_job ?async_method job =
   let async_method = choose_async_method async_method in
@@ -287,7 +289,9 @@ type file_descr = {
   (* Hooks to call when the file descriptor becomes writable. *)
 }
 
+[@@@ocaml.warning "-3"]
 external is_socket : Unix.file_descr -> bool = "lwt_unix_is_socket" "noalloc"
+[@@@ocaml.warning "+3"]
 
 external guess_blocking_job : Unix.file_descr -> bool job = "lwt_unix_guess_blocking_job"
 
@@ -591,6 +595,9 @@ type open_flag =
   | O_RSYNC
   | O_SHARE_DELETE
   | O_CLOEXEC
+#if OCAML_VERSION >= (4, 05, 0)
+  | O_KEEPEXEC
+#endif
 
 external open_job : string -> Unix.open_flag list -> int -> (Unix.file_descr * bool) job = "lwt_unix_open_job"
 
@@ -660,6 +667,143 @@ let write_string ch buf pos len =
   let buf = Bytes.unsafe_of_string buf in
   write ch buf pos len
 
+module IO_vectors =
+struct
+  type _bigarray =
+    (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+  type buffer =
+    | Bytes of bytes
+    | Bigarray of _bigarray
+
+  type io_vector =
+    {buffer : buffer;
+     mutable offset : int;
+     mutable length : int}
+
+  (* This representation does not give constant amortized time append across all
+     possible operation sequences, but it does for expected typical usage, in
+     which some number of append operations is followed by some number of
+     flatten operations. *)
+  type t =
+    {mutable prefix : io_vector list;
+     mutable reversed_suffix : io_vector list;
+     mutable count : int}
+
+  let create () = {prefix = []; reversed_suffix = []; count = 0}
+
+  let append io_vectors io_vector =
+    io_vectors.reversed_suffix <- io_vector::io_vectors.reversed_suffix;
+    io_vectors.count <- io_vectors.count + 1
+
+  let append_bytes io_vectors buffer offset length =
+    append io_vectors {buffer = Bytes buffer; offset; length}
+
+  let append_bigarray io_vectors buffer offset length =
+    append io_vectors {buffer = Bigarray buffer; offset; length}
+
+  let flatten io_vectors =
+    match io_vectors.reversed_suffix with
+    | [] -> ()
+    | _ ->
+      io_vectors.prefix <-
+        io_vectors.prefix @ (List.rev io_vectors.reversed_suffix);
+      io_vectors.reversed_suffix <- []
+
+  let drop io_vectors count =
+    flatten io_vectors;
+    let rec loop count prefix =
+      if count <= 0 then prefix
+      else
+        match prefix with
+        | [] -> []
+        | {length; _}::rest when length <= count ->
+          io_vectors.count <- io_vectors.count - 1;
+          loop (count - length) rest
+        | first::_ ->
+          first.offset <- first.offset + count;
+          first.length <- first.length - count;
+          prefix
+    in
+    io_vectors.prefix <- loop count io_vectors.prefix
+
+  let is_empty io_vectors =
+    flatten io_vectors;
+    let rec loop = function
+      | [] -> true
+      | {length = 0; _}::rest -> loop rest
+      | _ -> false
+    in
+    loop io_vectors.prefix
+
+  external stub_iov_max : unit -> int = "lwt_unix_iov_max"
+
+  let system_limit =
+    if Sys.win32 then None
+    else Some (stub_iov_max ())
+
+  let check tag io_vector =
+    let buffer_length =
+      match io_vector.buffer with
+      | Bytes s -> Bytes.length s
+      | Bigarray a -> Bigarray.Array1.dim a
+    in
+
+    if io_vector.length < 0 ||
+       io_vector.offset < 0 ||
+       io_vector.offset + io_vector.length > buffer_length then
+      invalid_arg tag
+end
+
+(* Flattens the I/O vectors into a single list, checks their bounds, and
+   evaluates to the minimum of: the number of vectors and the system's
+   IOV_MAX. *)
+let check_io_vectors function_name io_vectors =
+  IO_vectors.flatten io_vectors;
+  List.iter (IO_vectors.check function_name) io_vectors.IO_vectors.prefix;
+
+  match IO_vectors.system_limit with
+  | Some limit when io_vectors.IO_vectors.count > limit -> limit
+  | _ -> io_vectors.IO_vectors.count
+
+external stub_readv :
+  Unix.file_descr -> IO_vectors.io_vector list -> int -> int =
+  "lwt_unix_readv"
+
+external readv_job :
+  Unix.file_descr -> IO_vectors.io_vector list -> int -> int job =
+  "lwt_unix_readv_job"
+
+let readv fd io_vectors =
+  let count = check_io_vectors "readv" io_vectors in
+
+  Lazy.force fd.blocking >>= function
+    | true ->
+      wait_read fd >>= fun () ->
+      run_job (readv_job fd.fd io_vectors.IO_vectors.prefix count)
+    | false ->
+      wrap_syscall Read fd (fun () ->
+        stub_readv fd.fd io_vectors.IO_vectors.prefix count)
+
+external stub_writev :
+  Unix.file_descr -> IO_vectors.io_vector list -> int -> int =
+  "lwt_unix_writev"
+
+external writev_job :
+  Unix.file_descr -> IO_vectors.io_vector list -> int -> int job =
+  "lwt_unix_writev_job"
+
+let writev fd io_vectors =
+  let count = check_io_vectors "writev" io_vectors in
+
+  Lazy.force fd.blocking >>= function
+    | true ->
+      wait_write fd >>= fun () ->
+      run_job (writev_job fd.fd io_vectors.IO_vectors.prefix count)
+    | false ->
+      wrap_syscall Write fd (fun () ->
+        stub_writev fd.fd io_vectors.IO_vectors.prefix count)
+
 (* +-----------------------------------------------------------------+
    | Seeking and truncating                                          |
    +-----------------------------------------------------------------+ *)
@@ -694,10 +838,6 @@ let ftruncate ch offset =
    | File system synchronisation                                     |
    +-----------------------------------------------------------------+ *)
 
-(* fdatasync appears to be an undocumented system call on OS X. It is detected
-   during configuration of Lwt, and seems to work for now. However, it may break
-   if we make implicit function declaration an error, or in other
-   circumstances. *)
 let fdatasync ch =
   check_descriptor ch;
   run_job (Jobs.fdatasync_job ch.fd)
@@ -770,8 +910,8 @@ let file_exists name =
     (fun _ -> Lwt.return_true)
     (fun e ->
        match e with
-       | Unix.Unix_error (Unix.ENOENT, _, _) -> Lwt.return_false
-       | _ -> Lwt.fail e)
+       | Unix.Unix_error _ -> Lwt.return_false
+       | _ -> Lwt.fail e) [@ocaml.warning "-4"]
 
 external utimes_job : string -> float -> float -> unit job =
   "lwt_unix_utimes_job"
@@ -866,8 +1006,8 @@ struct
       (fun _ -> Lwt.return_true)
       (fun e ->
          match e with
-         | Unix.Unix_error (Unix.ENOENT, _, _) -> Lwt.return_false
-         | _ -> Lwt.fail e)
+         | Unix.Unix_error _ -> Lwt.return_false
+         | _ -> Lwt.fail e) [@ocaml.warning "-4"]
 
 end
 
@@ -1027,19 +1167,23 @@ let opendir name =
   else
     run_job (opendir_job name)
 
+external valid_dir : Unix.dir_handle -> bool = "lwt_unix_valid_dir"
 external readdir_job : Unix.dir_handle -> string job = "lwt_unix_readdir_job"
 
 let readdir handle =
   if Sys.win32 then
     Lwt.return (Unix.readdir handle)
   else
-    run_job (readdir_job handle)
+    if valid_dir handle then
+      run_job (readdir_job handle)
+    else
+      Lwt.fail (Unix.(Unix_error (EBADF, "Lwt_unix.readdir", "")))
 
 external readdir_n_job : Unix.dir_handle -> int -> string array job = "lwt_unix_readdir_n_job"
 
 let readdir_n handle count =
   if count < 0 then
-    Lwt.fail (Invalid_argument "Lwt_uinx.readdir_n")
+    Lwt.fail (Invalid_argument "Lwt_unix.readdir_n")
   else if Sys.win32 then
     let array = Array.make count "" in
     let rec fill i =
@@ -1054,7 +1198,10 @@ let readdir_n handle count =
     in
     fill 0
   else
-    run_job (readdir_n_job handle count)
+    if valid_dir handle then
+      run_job (readdir_n_job handle count)
+    else
+      Lwt.fail (Unix.(Unix_error (EBADF, "Lwt_unix.readdir_n", "")))
 
 external rewinddir_job : Unix.dir_handle -> unit job = "lwt_unix_rewinddir_job"
 
@@ -1062,15 +1209,24 @@ let rewinddir handle =
   if Sys.win32 then
     Lwt.return (Unix.rewinddir handle)
   else
-    run_job (rewinddir_job handle)
+    if valid_dir handle then
+      run_job (rewinddir_job handle)
+    else
+      Lwt.fail (Unix.(Unix_error (EBADF, "Lwt_unix.rewinddir", "")))
 
 external closedir_job : Unix.dir_handle -> unit job = "lwt_unix_closedir_job"
+external invalidate_dir : Unix.dir_handle -> unit = "lwt_unix_invalidate_dir"
 
 let closedir handle =
   if Sys.win32 then
     Lwt.return (Unix.closedir handle)
   else
-    run_job (closedir_job handle)
+    if valid_dir handle then
+      run_job (closedir_job handle) >>= fun () ->
+      invalidate_dir handle;
+      Lwt.return_unit
+    else
+      Lwt.fail (Unix.(Unix_error (EBADF, "Lwt_unix.closedir", "")))
 
 type list_directory_state  =
   | LDS_not_started
@@ -1085,6 +1241,7 @@ let cleanup_dir_handle state =
         ()
 
 let files_of_directory path =
+  let chunk_size = 1024 in
   let state = ref LDS_not_started in
   Lwt_stream.concat
     (Lwt_stream.from
@@ -1093,11 +1250,11 @@ let files_of_directory path =
             | LDS_not_started ->
                 opendir path >>= fun handle ->
                 Lwt.catch
-                  (fun () -> readdir_n handle 1024)
+                  (fun () -> readdir_n handle chunk_size)
                   (fun exn ->
                     closedir handle >>= fun () ->
                     Lwt.fail exn) >>= fun entries ->
-                if Array.length entries < 1024 then begin
+                if Array.length entries < chunk_size then begin
                   state := LDS_done;
                   closedir handle >>= fun () ->
                   Lwt.return (Some(Lwt_stream.of_array entries))
@@ -1108,11 +1265,11 @@ let files_of_directory path =
                 end
             | LDS_listing handle ->
                 Lwt.catch
-                  (fun () -> readdir_n handle 1024)
+                  (fun () -> readdir_n handle chunk_size)
                   (fun exn ->
                     closedir handle >>= fun () ->
                     Lwt.fail exn) >>= fun entries ->
-                if Array.length entries < 1024 then begin
+                if Array.length entries < chunk_size then begin
                   state := LDS_done;
                   closedir handle >>= fun () ->
                   Lwt.return (Some(Lwt_stream.of_array entries))
@@ -1127,15 +1284,15 @@ let files_of_directory path =
 
 let pipe () =
   let (out_fd, in_fd) = Unix.pipe() in
-  (mk_ch ~blocking:Lwt_sys.windows out_fd, mk_ch ~blocking:Lwt_sys.windows in_fd)
+  (mk_ch ~blocking:Sys.win32 out_fd, mk_ch ~blocking:Sys.win32 in_fd)
 
 let pipe_in () =
   let (out_fd, in_fd) = Unix.pipe() in
-  (mk_ch ~blocking:Lwt_sys.windows out_fd, in_fd)
+  (mk_ch ~blocking:Sys.win32 out_fd, in_fd)
 
 let pipe_out () =
   let (out_fd, in_fd) = Unix.pipe() in
-  (out_fd, mk_ch ~blocking:Lwt_sys.windows in_fd)
+  (out_fd, mk_ch ~blocking:Sys.win32 in_fd)
 
 let mkfifo name perms =
   if Sys.win32 then
@@ -1363,7 +1520,13 @@ let shutdown ch shutdown_command =
 external stub_socketpair : socket_domain -> socket_type -> int -> Unix.file_descr * Unix.file_descr = "lwt_unix_socketpair_stub"
 
 let socketpair dom typ proto =
+#if OCAML_VERSION >= (4, 05, 0)
+  let do_socketpair =
+    if Sys.win32 then stub_socketpair
+    else Unix.socketpair ?cloexec:None in
+#else
   let do_socketpair = if Sys.win32 then stub_socketpair else Unix.socketpair  in
+#endif
   let (s1, s2) = do_socketpair dom typ proto in
   (mk_ch ~blocking:false s1, mk_ch ~blocking:false s2)
 
@@ -1378,7 +1541,7 @@ let accept_n ch n =
       wrap_syscall Read ch begin fun () ->
         begin
           try
-            for i = 1 to n do
+            for _i = 1 to n do
               if blocking && not (unix_readable ch.fd) then raise Retry;
               let fd, addr = Unix.accept ch.fd in
               l := (mk_ch ~blocking:false fd, addr) :: !l
@@ -1444,9 +1607,14 @@ let connect ch addr =
               raise Retry
     end
 
-let bind ch addr =
-  check_descriptor ch;
-  Unix.bind ch.fd addr
+external bind_job : Unix.file_descr -> Unix.sockaddr -> unit job =
+  "lwt_unix_bind_job"
+
+let bind fd addr =
+  check_descriptor fd;
+  match Sys.win32, addr with
+  | true, _ | false, Unix.ADDR_INET _ -> Lwt.return (Unix.bind fd.fd addr)
+  | false, Unix.ADDR_UNIX _ -> run_job (bind_job fd.fd addr)
 
 let listen ch cnt =
   check_descriptor ch;
@@ -1660,7 +1828,8 @@ let getprotobynumber number =
     Lwt_mutex.with_lock protoent_mutex ( fun () ->
         run_job (getprotobynumber_job number))
 
-let servent_mutex =
+(* TODO: Not used anywhere, and that might be a bug. *)
+let _servent_mutex =
   if Sys.win32 || Lwt_config._HAVE_NETDB_REENTRANT then
     hostent_mutex
   else
@@ -1855,14 +2024,11 @@ let tcflow ch act =
    | Reading notifications                                           |
    +-----------------------------------------------------------------+ *)
 
-(* Buffer used to receive notifications: *)
-let notification_buffer = Bytes.create 4
-
 external init_notification : unit -> Unix.file_descr = "lwt_unix_init_notification"
 external send_notification : int -> unit = "lwt_unix_send_notification_stub"
 external recv_notifications : unit -> int array = "lwt_unix_recv_notifications"
 
-let rec handle_notifications ev =
+let handle_notifications _ =
   (* Process available notifications. *)
   Array.iter call_notification (recv_notifications ())
 
@@ -1890,13 +2056,13 @@ and signal_handler_id = signal_handler option ref
 let signals = ref Signal_map.empty
 let signal_count () =
   Signal_map.fold
-    (fun signum (id, actions) len -> len + Lwt_sequence.length actions)
+    (fun _signum (_id, actions) len -> len + Lwt_sequence.length actions)
     !signals
     0
 
 let on_signal_full signum handler =
   let id = ref None in
-  let notification, actions =
+  let _, actions =
     try
       Signal_map.find signum !signals
     with Not_found ->
@@ -1920,7 +2086,7 @@ let on_signal_full signum handler =
   id := Some { sh_num = signum; sh_node = node };
   id
 
-let on_signal signum f = on_signal_full signum (fun id num -> f num)
+let on_signal signum f = on_signal_full signum (fun _id num -> f num)
 
 let disable_signal_handler id =
   match !id with
@@ -1938,7 +2104,7 @@ let disable_signal_handler id =
 
 let reinstall_signal_handler signum =
   match try Some (Signal_map.find signum !signals) with Not_found -> None with
-    | Some (notification, actions) ->
+    | Some (notification, _) ->
         set_signal signum notification
     | None ->
         ()
@@ -1959,7 +2125,7 @@ let fork () =
         (* Reinitialise the notification system. *)
         event_notifications := Lwt_engine.on_readable (init_notification ()) handle_notifications;
         (* Collect all pending jobs. *)
-        let l = Lwt_sequence.fold_l (fun (w, f) l -> f :: l) jobs [] in
+        let l = Lwt_sequence.fold_l (fun (_, f) l -> f :: l) jobs [] in
         (* Remove them all. *)
         Lwt_sequence.iter_node_l Lwt_sequence.remove jobs;
         (* And cancel them all. We yield first so that if the program
@@ -2097,10 +2263,12 @@ let handle_unix_error f x =
    | System thread pool                                              |
    +-----------------------------------------------------------------+ *)
 
+[@@@ocaml.warning "-3"]
 external pool_size : unit -> int = "lwt_unix_pool_size" "noalloc"
 external set_pool_size : int -> unit = "lwt_unix_set_pool_size" "noalloc"
 external thread_count : unit -> int = "lwt_unix_thread_count" "noalloc"
 external thread_waiting_count : unit -> int = "lwt_unix_thread_waiting_count" "noalloc"
+[@@@ocaml.warning "+3"]
 
 (* +-----------------------------------------------------------------+
    | CPUs                                                            |
@@ -2197,3 +2365,12 @@ let () =
            Some(Printf.sprintf "Unix.Unix_error(Unix.%s, %S, %S)" error func arg)
        | _ ->
            None)
+
+module Versioned =
+struct
+  let bind_1 ch addr =
+    check_descriptor ch;
+    Unix.bind ch.fd addr
+
+  let bind_2 = bind
+end

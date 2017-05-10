@@ -23,8 +23,6 @@
 
 (* This code is an adaptation of [syslog-ocaml] *)
 
-open Lwt.Infix
-
 (* Errors happening in this module are always logged to [stderr]: *)
 let log_intern fmt =
   Printf.eprintf ("Lwt_log: " ^^ fmt ^^ "\n%!")
@@ -49,11 +47,21 @@ let string_of_level = function
   | Error -> "error"
   | Fatal -> "fatal"
 
+let level_of_string str =
+  let str = (String.lowercase [@ocaml.warning "-3"]) str in
+  match str with
+  | "debug" -> Some Debug
+  | "info" -> Some Info
+  | "notice" -> Some Notice
+  | "warning" -> Some Warning
+  | "error" -> Some Error
+  | "fatal" -> Some Fatal
+  | _ -> None
+
 (* +-----------------------------------------------------------------+
    | Patterns and rules                                              |
    +-----------------------------------------------------------------+ *)
 
-type pattern = string list
     (* A pattern is represented by a list of literals:
 
        For example ["foo*bar*"] is represented by ["foo"; "bar"; ""]. *)
@@ -104,31 +112,30 @@ let split pattern =
   in
   loop 0
 
-
 let rules = ref []
 
-let load_rules' str =
+let load_rules' str fail_on_error =
   let rec loop = function
-    | [] ->
-      []
-    | (pattern, level) :: rest ->
-      let pattern = split pattern in
-      match String.lowercase level with
-        | "debug" -> (pattern, Debug) :: loop rest
-        | "info" -> (pattern, Info) :: loop rest
-        | "notice" -> (pattern, Notice) :: loop rest
-        | "warning" -> (pattern, Warning) :: loop rest
-        | "error" -> (pattern, Error) :: loop rest
-        | "fatal" -> (pattern, Fatal) :: loop rest
-        | level -> log_intern "invalid log level (%s)" level; loop rest
+  | [] -> []
+  | (pattern, level_str) :: rest ->
+    let pattern = split pattern in
+    let level = level_of_string level_str in
+    match level with
+    | Some level -> (pattern, level) :: loop rest
+    | None ->
+      if fail_on_error then raise (Failure "Invalid log rules")
+      else log_intern "invalid log level (%s)" level_str; loop rest
   in
   match Lwt_log_rules.rules (Lexing.from_string str) with
-    | None -> Printf.eprintf "Invalid contents of the LWT_LOG variable\n%!"
-    | Some l -> rules := loop l
+  | None ->
+    if fail_on_error then raise (Failure "Invalid log rules")
+    else Printf.eprintf "Invalid log rules\n%!"
+  | Some l -> rules := loop l
+
 
 let _ =
   match try Some(Sys.getenv "LWT_LOG") with Not_found -> None with
-    | Some str -> load_rules' str
+    | Some str -> load_rules' str false
     | None -> ()
 
 (* +-----------------------------------------------------------------+
@@ -200,8 +207,8 @@ end
 
 type section = Section.t
 
-let load_rules str =
-  load_rules' str;
+let load_rules ?(fail_on_error=false) str =
+  load_rules' str fail_on_error;
   Section.recompute_levels ()
 
 let add_rule pattern level =
@@ -281,7 +288,7 @@ let render ~buffer ~template ~section ~level ~message =
 
 let null =
   make
-    ~output:(fun section level lines -> Lwt.return_unit)
+    ~output:(fun _section _level _lines -> Lwt.return_unit)
     ~close:Lwt.return
 
 let default = ref null
@@ -291,16 +298,20 @@ let default = ref null
    | Logging functions                                               |
    +-----------------------------------------------------------------+ *)
 
+(* knicked from stdlib/string.ml; available since 4.04.0 *)
+let split_on_char sep s =
+  let r = ref [] in
+  let j = ref (String.length s) in
+  for i = String.length s - 1 downto 0 do
+    if String.unsafe_get s i = sep then begin
+      r := String.sub s (i + 1) (!j - i - 1) :: !r;
+      j := i
+    end
+  done;
+  String.sub s 0 !j :: !r
+
 let split str =
-  let len = String.length str in
-  let rec aux i =
-    if i >= len then
-      []
-    else
-      let j = try String.index_from str i '\n' with Not_found -> String.length str in
-      String.sub str i (j - i) :: aux (j + 1)
-  in
-  aux 0
+  split_on_char '\n' str
 
 let log ?exn ?(section=Section.main) ?location ?logger ~level message =
   let logger = match logger with

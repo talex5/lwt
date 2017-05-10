@@ -22,8 +22,6 @@
 
 (* Relay data from an address to another. *)
 
-open Lwt.Infix
-
 (* +-----------------------------------------------------------------+
    | Relaying                                                        |
    +-----------------------------------------------------------------+ *)
@@ -127,7 +125,7 @@ let%lwt () =
     (* Initialize the listening address. *)
     let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
     Lwt_unix.setsockopt sock Unix.SO_REUSEADDR true;
-    Lwt_unix.bind sock src_addr;
+    let%lwt () = Lwt_unix.bind sock src_addr in
     Lwt_unix.listen sock 1024;
 
     ignore (Lwt_log.notice "waiting for connection");

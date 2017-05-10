@@ -20,46 +20,63 @@
  * 02111-1307, USA.
  *)
 
-open Lwt
-open Lwt_io
 open Test
+open Lwt.Infix
 
 let test_file = "Lwt_io_test"
 let file_contents = "test file content"
 
 let open_and_read_filename () =
-  open_file ~mode:input test_file >>= fun in_chan ->
-  read in_chan >>= fun s ->
-  close in_chan >>= fun () ->
+  Lwt_io.open_file ~mode:Lwt_io.input test_file >>= fun in_chan ->
+  Lwt_io.read in_chan >>= fun s ->
+  Lwt_io.close in_chan >>= fun () ->
   assert (s = file_contents);
-  return ()
+  Lwt.return ()
 
 let suite = suite "lwt_io non blocking io" [
   test "file does not exist"
     (fun () -> Lwt_unix.file_exists test_file >|= fun r -> not r);
 
+  test "file does not exist (invalid path)"
+    (fun () -> Lwt_unix.file_exists (test_file ^ "/foo") >|= fun r -> not r);
+
+  test "file does not exist (LargeFile)"
+    (fun () -> Lwt_unix.LargeFile.file_exists test_file >|= fun r -> not r);
+
+  test "file does not exist (LargeFile, invalid path)"
+    (fun () -> Lwt_unix.LargeFile.file_exists (test_file ^ "/foo") >|= fun r -> not r);
+
   test "create file"
     (fun () ->
-      open_file ~mode:output test_file >>= fun out_chan ->
-      write out_chan file_contents >>= fun () ->
-      close out_chan >>= fun () ->
-      return true);
+      Lwt_io.open_file ~mode:Lwt_io.output test_file >>= fun out_chan ->
+      Lwt_io.write out_chan file_contents >>= fun () ->
+      Lwt_io.close out_chan >>= fun () ->
+      Lwt.return_true);
 
   test "file exists"
     (fun () -> Lwt_unix.file_exists test_file);
 
+  test "file does not exist (invalid path)"
+    (fun () -> Lwt_unix.file_exists (test_file ^ "/foo") >|= fun r -> not r);
+
+  test "file exists (LargeFile)"
+    (fun () -> Lwt_unix.LargeFile.file_exists test_file);
+
+  test "file does not exist (LargeFile, invalid path)"
+    (fun () -> Lwt_unix.LargeFile.file_exists (test_file ^ "/foo") >|= fun r -> not r);
+
   test "read file"
     (fun () ->
-      open_file ~mode:input test_file >>= fun in_chan ->
-      read in_chan >>= fun s ->
-      close in_chan >>= fun () ->
-      return (s = file_contents));
+      Lwt_io.open_file ~mode:Lwt_io.input test_file >>= fun in_chan ->
+      Lwt_io.read in_chan >>= fun s ->
+      Lwt_io.close in_chan >>= fun () ->
+      Lwt.return (s = file_contents));
 
   test "many read file"
     (fun () ->
       let rec loop i =
         open_and_read_filename () >>= fun () ->
-        if i > 10000 then return true
+        if i > 10000 then Lwt.return_true
         else loop (i + 1)
       in
       loop 0);
@@ -67,6 +84,6 @@ let suite = suite "lwt_io non blocking io" [
   test "remove file"
     (fun () ->
       Unix.unlink test_file;
-      return true);
+      Lwt.return_true);
 
 ]

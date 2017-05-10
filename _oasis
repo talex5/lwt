@@ -3,9 +3,9 @@
 # +-------------------------------------------------------------------+
 
 OASISFormat: 0.4
-OCamlVersion: >= 4.01
+OCamlVersion: >= 4.02
 Name: lwt
-Version: 2.6.0
+Version: 3.0.0
 LicenseFile: COPYING
 License: LGPL-2.1 with OCaml linking exception
 Authors:
@@ -28,18 +28,21 @@ Homepage: http://ocsigen.org/lwt/
 BuildTools: ocamlbuild
 Plugins: DevFiles (0.4), META (0.4)
 XDevFilesEnableMakefile: false
-PostConfCommand: ocaml utils/discover.ml -ext-obj $ext_obj -exec-name $default_executable_name -use-libev $libev -os-type $os_type -use-glib $glib -ccomp-type $ccomp_type -use-pthread $pthread -use-unix $unix -android-target $android_target -libev_default $libev_default
+PostConfCommand: ocaml src/util/discover.ml -ext-obj $ext_obj -exec-name $default_executable_name -use-libev $libev -os-type $os_type -use-glib $glib -ccomp-type $ccomp_type -use-pthread $pthread -use-unix $unix -android-target $android_target -libev_default $libev_default
 PostDistCleanCommand: $rm src/unix/lwt_config.h src/unix/lwt_config.ml src/unix/lwt_unix_jobs_generated.ml src/unix/jobs-unix/*
 
-AlphaFeatures: pure_interface
+AlphaFeatures: pure_interface, ocamlbuild_more_args
+XOCamlbuildPluginTags: package(cppo_ocamlbuild)
 
-Synopsis: Lightweight thread library for OCaml
+Synopsis: Monadic promises and concurrent I/O
 Description:
-  Lwt is a library of cooperative threads implemented in monadic
-  style. With respect to preemptive threads, cooperative threads are
-  not using a scheduler to distribute processor time between
-  threads. Instead of this, each thread must tell the others that he
-  wants to let them work.
+  A promise is a value that may become determined in the future. Lwt provides
+  typed, composable promises. Promises that are resolved by I/O are resolved by
+  Lwt in parallel. Meanwhile, OCaml code, including code creating and waiting on
+  promises, runs in a single thread by default. This reduces the need for locks
+  or other nchronization primitives. Code can be run in parallel on an opt-in
+  basis.
+
 
 # +-------------------------------------------------------------------+
 # | Flags                                                             |
@@ -70,7 +73,7 @@ Flag react
   Default$: flag(all)
 
 Flag glib
-  Description: Glib integration
+  Description: GLib integration
   Default$: flag(all)
 
 Flag ssl
@@ -92,6 +95,10 @@ Flag libev_default
 Flag pthread
   Description: Use pthread
   Default$: !os_type(Win32)
+
+Flag coverage
+  Description: Instrument for coverage analysis
+  Default: false
 
 # +-------------------------------------------------------------------+
 # | Libraries                                                         |
@@ -199,6 +206,8 @@ Library "lwt-simple-top"
   BuildDepends: lwt, lwt.unix, compiler-libs.common
   XMETADescription: Lwt-OCaml top level integration (deprecated; use utop)
 
+# This library is built through this build system only in development. For the
+# release build system, see src/react/_oasis.
 Library "lwt-react"
   Build$: flag(react) || flag(all)
   Install$: flag(react) || flag(all)
@@ -207,7 +216,7 @@ Library "lwt-react"
   Path: src/react
   Modules: Lwt_react
   BuildDepends: lwt, react
-  XMETADescription: Reactive programming helpers for Lwt
+  XMETADescription: Reactive programming helpers for Lwt (deprecated; use package lwt_react)
 
 Library "lwt-preemptive"
   Build$: flag(preemptive) || flag(all)
@@ -219,6 +228,8 @@ Library "lwt-preemptive"
   BuildDepends: lwt, lwt.unix, threads
   XMETADescription: Preemptive thread support for Lwt
 
+# This library is built through this build system only in development. For the
+# release build system, see src/glib/_oasis.
 Library "lwt-glib"
   Build$: flag(glib) || flag(all)
   Install$: flag(glib) || flag(all)
@@ -228,8 +239,10 @@ Library "lwt-glib"
   Modules: Lwt_glib
   CSources: lwt_glib_stubs.c
   BuildDepends: lwt, lwt.unix
-  XMETADescription: Glib integration for Lwt
+  XMETADescription: GLib integration for Lwt (deprecated; use package lwt_glib)
 
+# This library is built through this build system only in development. For the
+# release build system, see src/ssl/_oasis.
 Library "lwt-ssl"
   Build$: flag(ssl) || flag(all)
   Install$: flag(ssl) || flag(all)
@@ -238,7 +251,7 @@ Library "lwt-ssl"
   Path: src/ssl
   Modules: Lwt_ssl
   BuildDepends: ssl, lwt.unix
-  XMETADescription: SSL support for Lwt
+  XMETADescription: SSL support for Lwt (deprecated; use package lwt_ssl)
 
 Library "lwt-syntax"
   Build$: flag(camlp4) || flag(all)
@@ -304,7 +317,7 @@ Document "lwt-api"
   Type: ocamlbuild (0.3)
   Install: true
   InstallDir: $htmldir/api
-  DataFiles: utils/style.css
+  DataFiles: src/util/style.css
   BuildTools: ocamldoc
   XOCamlbuildPath: ./
   XOCamlbuildLibraries:

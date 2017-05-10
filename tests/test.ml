@@ -20,9 +20,6 @@
  * 02111-1307, USA.
  *)
 
-open Lwt
-open Lwt_io
-
 type t = {
   name : string;
   only_if : unit -> bool;
@@ -39,11 +36,14 @@ let test_direct name ?(only_if = fun () -> true) run = {name; only_if; run}
 let test name ?(only_if = fun () -> true) run =
   {name; only_if; run = fun () -> Lwt_main.run (run ())}
 
-let suite ~name ~tests = { suite_name = name; suite_tests = tests }
+let suite name tests = { suite_name = name; suite_tests = tests }
 
-let run ~name ~suites =
+let run name suites =
   (* Count the number of tests in [suites] *)
-  let total = List.fold_left (fun n { suite_tests = l } -> n + List.length l) 0 suites in
+  let total =
+    List.fold_left (fun n {suite_tests = l; _} ->
+      n + List.length l) 0 suites
+  in
 
   Printf.printf "Running %d tests for library %S.\n%!" total name;
 
@@ -96,5 +96,21 @@ let run ~name ~suites =
   in
   loop_suites 0 0 1 suites
 
+let temp_name =
+  let rng = Random.State.make_self_init () in
+  fun () ->
+    let number = Random.State.int rng 10000 in
+    Printf.sprintf "_build/lwt-testing-%04d" number
+
 let temp_file () =
   Filename.temp_file ~temp_dir:"_build" "lwt-testing-" ""
+
+let temp_directory () =
+  let rec attempt () =
+    let path = temp_name () in
+    try
+      Unix.mkdir path 0o755;
+      path
+    with Unix.Unix_error (Unix.EEXIST, "mkdir", _) -> attempt ()
+  in
+  attempt ()

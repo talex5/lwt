@@ -143,7 +143,7 @@ let add_worker worker =
         Lwt.wakeup w worker
 
 (* Wait for worker to be available, then return it: *)
-let rec get_worker () =
+let get_worker () =
   if not (Queue.is_empty workers) then
     Lwt.return (Queue.take workers)
   else if !threads_count < !max_threads then
@@ -163,7 +163,7 @@ let set_bounds (min, max) =
   min_threads := min;
   max_threads := max;
   (* Launch new workers: *)
-  for i = 1 to diff do
+  for _i = 1 to diff do
     add_worker (make_worker ())
   done
 
@@ -188,7 +188,7 @@ let nbthreadsbusy () = !threads_count - Queue.length workers
    | Detaching                                                       |
    +-----------------------------------------------------------------+ *)
 
-let init_result = Lwt.make_error (Failure "Lwt_preemptive.detach")
+let init_result = Result.Error (Failure "Lwt_preemptive.detach")
 
 let detach f args =
   simple_init ();
@@ -196,9 +196,9 @@ let detach f args =
   (* The task for the worker thread: *)
   let task () =
     try
-      result := Lwt.make_value (f args)
+      result := Result.Ok (f args)
     with exn ->
-      result := Lwt.make_error exn
+      result := Result.Error exn
   in
   get_worker () >>= fun worker ->
   let waiter, wakener = Lwt.wait () in
@@ -227,10 +227,6 @@ let detach f args =
    | Running Lwt threads in the main thread                          |
    +-----------------------------------------------------------------+ *)
 
-type 'a result =
-  | Value of 'a
-  | Error of exn
-
 (* Queue of [unit -> unit Lwt.t] functions. *)
 let jobs = Queue.create ()
 
@@ -258,8 +254,8 @@ let run_in_main f =
   let job () =
     (* Execute [f] and wait for its result. *)
     Lwt.try_bind f
-      (fun ret -> Lwt.return (Value ret))
-      (fun exn -> Lwt.return (Error exn)) >>= fun result ->
+      (fun ret -> Lwt.return (Result.Ok ret))
+      (fun exn -> Lwt.return (Result.Error exn)) >>= fun result ->
     (* Send the result. *)
     CELL.set cell result;
     Lwt.return_unit
@@ -272,5 +268,5 @@ let run_in_main f =
   Lwt_unix.send_notification job_notification;
   (* Wait for the result. *)
   match CELL.get cell with
-    | Value ret -> ret
-    | Error exn -> raise exn
+    | Result.Ok ret -> ret
+    | Result.Error exn -> raise exn

@@ -144,7 +144,10 @@ val get : 'a key -> 'a option
 
 val with_value : 'a key -> 'a option -> (unit -> 'b) -> 'b
   (** [with_value key value f] executes [f] with [value] associated to
-      [key]. [key] is restored to its previous value after [f] terminates. *)
+      [key]. [key] is restored to its previous value after [f] terminates.
+
+      This function should not be applied within threads created with
+      {!Lwt_preemptive.detach}. *)
 
 (** {2 Exceptions handling} *)
 
@@ -315,10 +318,14 @@ type +'a result = ('a, exn) Result.result
       This type is defined as [('a, exn) Result.result] since 2.6.0. *)
 
 val make_value : 'a -> 'a result
+  [@@ocaml.deprecated
+    " Use Result.Ok, which is the same as Ok since OCaml 4.03."]
   (** [value x] creates a result containing the value [x].
       @deprecated Since 2.6.0. Use {!Result.Ok} *)
 
 val make_error : exn -> 'a result
+  [@@ocaml.deprecated
+    " Use Result.Error, which is the same as Error since OCaml 4.03."]
   (** [error e] creates a result containing the exception [e].
       @deprecated Since 2.6.0. Use {!Result.Error} *)
 

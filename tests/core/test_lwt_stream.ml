@@ -23,6 +23,15 @@
 open Lwt
 open Test
 
+let expect_exit f =
+  Lwt.catch
+    (fun () ->
+      f () >>= fun _ ->
+      Lwt.return_false)
+    (function
+      | Exit -> Lwt.return_true
+      | e -> Lwt.fail e)
+
 let suite = suite "lwt_stream" [
   test "from"
     (fun () ->
@@ -202,7 +211,7 @@ let suite = suite "lwt_stream" [
 
   test "cancel push stream 1"
     (fun () ->
-       let stream, push = Lwt_stream.create () in
+       let stream, _ = Lwt_stream.create () in
        let t = Lwt_stream.next stream in
        cancel t;
        return (state t = Fail Canceled));
@@ -238,7 +247,7 @@ let suite = suite "lwt_stream" [
            else
              match Weak.get w idx with
                | None -> loop acc (idx + 1)
-               | Some v -> loop (acc + 1) (idx + 1)
+               | Some _ -> loop (acc + 1) (idx + 1)
          in
          loop 0 0
        in
@@ -273,8 +282,13 @@ let suite = suite "lwt_stream" [
 
   test "map_exn"
     (fun () ->
-       let open Lwt_stream in
-       let l = [Value 1; Error Exit; Error (Failure "plop"); Value 42; Error End_of_file] in
+       let l =
+         [Result.Ok 1;
+          Result.Error Exit;
+          Result.Error (Failure "plop");
+          Result.Ok 42;
+          Result.Error End_of_file]
+       in
        let q = ref l in
        let stream =
          Lwt_stream.from
@@ -282,75 +296,144 @@ let suite = suite "lwt_stream" [
               match !q with
                 | [] ->
                     return None
-                | Value x :: l ->
+                | (Result.Ok x)::l ->
                     q := l;
                     return (Some x)
-                | Error e :: l ->
+                | (Result.Error e)::l ->
                     q := l;
                     Lwt.fail e)
        in
-       Lwt_stream.to_list (Lwt_stream.map_exn stream) >>= fun l' ->
+       Lwt_stream.to_list (Lwt_stream.wrap_exn stream) >>= fun l' ->
        return (l = l'));
 
   test "is_closed"
     (fun () ->
-      let st = Lwt_stream.of_list [1; 2] in
-      let b1 = not (Lwt_stream.is_closed st) in
-      ignore (Lwt_stream.peek st);
-      let b2 = not (Lwt_stream.is_closed st) in
+      let b1 = Lwt_stream.(is_closed (of_list [])) in
+      let b2 = Lwt_stream.(is_closed (of_list [1;2;3])) in
+      let b3 = Lwt_stream.(is_closed (of_array [||])) in
+      let b4 = Lwt_stream.(is_closed (of_array [|1;2;3;|])) in
+      let b5 = Lwt_stream.(is_closed (of_string "")) in
+      let b6 = Lwt_stream.(is_closed (of_string "123")) in
+      let b7 = Lwt_stream.(is_closed (from_direct (fun () -> Some 1))) in
+      let st = Lwt_stream.from_direct (fun () -> None) in
+      let b8 = Lwt_stream.is_closed st in
       ignore (Lwt_stream.junk st);
-      ignore (Lwt_stream.peek st);
-      let b3 = not (Lwt_stream.is_closed st) in
-      ignore (Lwt_stream.junk st);
-      ignore (Lwt_stream.peek st);
-      let b4 = Lwt_stream.is_closed st in
-      Lwt.return (b1 && b2 && b3 && b4));
+      let b9 = Lwt_stream.is_closed st in
+      return (b1 && b2 && b3 && b4 && b5 && b6 && not b7 && not b8 && b9));
 
   test "closed"
     (fun () ->
-      let st = Lwt_stream.of_list [1; 2] in
+      let st = Lwt_stream.from_direct (
+        let value = ref (Some 1) in
+        fun () -> let r = !value in value := None; r)
+      in
       let b = ref false in
-      let is_closed_in_notification = ref false in
       Lwt.async (fun () ->
-        Lwt_stream.closed st >|= fun () ->
-        b := true;
-        is_closed_in_notification := Lwt_stream.is_closed st);
+        Lwt_stream.closed st >|= fun () -> b := Lwt_stream.is_closed st);
       ignore (Lwt_stream.peek st);
       let b1 = !b = false in
       ignore (Lwt_stream.junk st);
       ignore (Lwt_stream.peek st);
-      let b2 = !b = false in
-      ignore (Lwt_stream.junk st);
-      ignore (Lwt_stream.peek st);
-      let b3 = !b = true in
-      Lwt.return (b1 && b2 && b3 && !is_closed_in_notification));
+      let b2 = !b = true in
+      return (b1 && b2));
 
   test "on_termination"
     (fun () ->
-      let st = Lwt_stream.of_list [1; 2] in
+      let st = Lwt_stream.from_direct (
+        let value = ref (Some 1) in
+        fun () -> let r = !value in value := None; r)
+      in
       let b = ref false in
-      Lwt_stream.on_termination st (fun () -> b := true);
+      (Lwt_stream.on_termination [@ocaml.warning "-3"])
+        st (fun () -> b := true);
       ignore (Lwt_stream.peek st);
       let b1 = !b = false in
       ignore (Lwt_stream.junk st);
       ignore (Lwt_stream.peek st);
-      let b2 = !b = false in
-      ignore (Lwt_stream.junk st);
-      ignore (Lwt_stream.peek st);
-      let b3 = !b = true in
+      let b2 = !b = true in
+      let b3 = Lwt_stream.is_closed st in
       Lwt.return (b1 && b2 && b3));
 
   test "on_termination when closed"
     (fun () ->
       let st = Lwt_stream.of_list [] in
       let b = ref false in
-      let b1 = not (Lwt_stream.is_closed st) in
-      ignore (Lwt_stream.junk st);
-      let b2 = Lwt_stream.is_closed st in
-      Lwt_stream.on_termination st (fun () -> b := true);
-      Lwt.return (b1 && b2 && !b));
+      let b1 = Lwt_stream.is_closed st in
+      (Lwt_stream.on_termination [@ocaml.warning "-3"])
+        st (fun () -> b := true);
+      Lwt.return (b1 && !b));
 
   test "choose_exhausted"
     (fun () ->
-      Lwt_stream.(to_list (choose [of_list []])) >|= fun _ -> true);
+      let open! Lwt_stream in
+      to_list (choose [of_list []]) >|= fun _ -> true);
+
+  test "exception passing: basic, from"
+    (fun () ->
+      let stream = Lwt_stream.from (fun () -> Lwt.fail Exit) in
+      expect_exit (fun () -> Lwt_stream.get stream));
+
+  test "exception passing: basic, from_direct"
+    (fun () ->
+      let stream = Lwt_stream.from_direct (fun () -> raise Exit) in
+      expect_exit (fun () -> Lwt_stream.get stream));
+
+  test "exception passing: to_list"
+    (fun () ->
+      let stream = Lwt_stream.from (fun () -> Lwt.fail Exit) in
+      expect_exit (fun () -> Lwt_stream.to_list stream));
+
+  test "exception passing: mapped"
+    (fun () ->
+      let stream = Lwt_stream.from (fun () -> Lwt.fail Exit) in
+      let stream = Lwt_stream.map (fun v -> v) stream in
+      expect_exit (fun () -> Lwt_stream.get stream));
+
+  test "exception passing: resume, not closed, from"
+    (fun () ->
+      let to_feed = ref (Lwt.fail Exit) in
+      let stream = Lwt_stream.from (fun () -> !to_feed) in
+
+      expect_exit (fun () -> Lwt_stream.get stream) >>= fun got_exit ->
+      let closed_after_exit = Lwt_stream.is_closed stream in
+
+      to_feed := Lwt.return (Some 0);
+      Lwt_stream.get stream >>= fun v ->
+      let got_zero = (v = Some 0) in
+
+      to_feed := Lwt.return_none;
+      Lwt_stream.get stream >>= fun v ->
+      let got_none = (v = None) in
+      let closed_at_end = Lwt_stream.is_closed stream in
+
+      Lwt.return
+        (got_exit &&
+         not closed_after_exit &&
+         got_zero &&
+         got_none &&
+         closed_at_end));
+
+  test "exception passing: resume, not closed, from_direct"
+    (fun () ->
+      let to_feed = ref (fun () -> raise Exit) in
+      let stream = Lwt_stream.from_direct (fun () -> !to_feed ()) in
+
+      expect_exit (fun () -> Lwt_stream.get stream) >>= fun got_exit ->
+      let closed_after_exit = Lwt_stream.is_closed stream in
+
+      to_feed := (fun () -> Some 0);
+      Lwt_stream.get stream >>= fun v ->
+      let got_zero = (v = Some 0) in
+
+      to_feed := (fun () -> None);
+      Lwt_stream.get stream >>= fun v ->
+      let got_none = (v = None) in
+      let closed_at_end = Lwt_stream.is_closed stream in
+
+      Lwt.return
+        (got_exit &&
+         not closed_after_exit &&
+         got_zero &&
+         got_none &&
+         closed_at_end));
 ]

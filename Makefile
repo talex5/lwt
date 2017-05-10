@@ -5,6 +5,10 @@
 #
 # Generic Makefile for oasis project
 
+# Suppress duplicate topdirs.cmi warnings.
+OCAMLFIND_IGNORE_DUPS_IN = $(shell ocamlfind query compiler-libs)
+export OCAMLFIND_IGNORE_DUPS_IN
+
 # Set to setup.exe for the release
 SETUP := setup-dev.exe
 
@@ -23,6 +27,8 @@ setup.exe: setup.ml
 	ocamlopt.opt -o $@ $< || ocamlopt -o $@ $< || ocamlc -o $@ $<
 	rm -f setup.cmx setup.cmi setup.o setup.obj setup.cmo
 
+setup: $(SETUP)
+
 build: $(SETUP) setup.data
 	./$(SETUP) -build $(BUILDFLAGS)
 
@@ -32,7 +38,7 @@ doc: $(SETUP) setup.data build
 doc-api: $(SETUP) setup.data build
 	./$(SETUP) -build lwt-api.docdir/index.html
 
-test: $(SETUP) setup.data build
+test: $(SETUP) setup.data build clean-coverage
 	./$(SETUP) -test $(TESTFLAGS)
 
 all: $(SETUP)
@@ -47,12 +53,16 @@ uninstall: $(SETUP) setup.data
 reinstall: $(SETUP) setup.data
 	./$(SETUP) -reinstall $(REINSTALLFLAGS)
 
-clean: $(SETUP)
+clean: $(SETUP) clean-coverage
 	./$(SETUP) -clean $(CLEANFLAGS)
 
 distclean: $(SETUP)
 	./$(SETUP) -distclean $(DISTCLEANFLAGS)
 	rm -rf setup*.exe
+
+clean-coverage:
+	rm -rf bisect*.out
+	rm -rf _coverage/
 
 configure: $(SETUP)
 	./$(SETUP) -configure $(CONFIGUREFLAGS)
@@ -60,4 +70,9 @@ configure: $(SETUP)
 setup.data: $(SETUP)
 	./$(SETUP) -configure $(CONFIGUREFLAGS)
 
-.PHONY: default build doc test all install uninstall reinstall clean distclean configure
+coverage: test
+	bisect-ppx-report -I _build/ -html _coverage/ bisect*.out
+	bisect-ppx-report -text - -summary-only bisect*.out
+	@echo See _coverage/index.html
+
+.PHONY: default setup build doc test all install uninstall reinstall clean distclean configure coverage

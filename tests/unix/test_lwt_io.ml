@@ -20,9 +20,8 @@
  * 02111-1307, USA.
  *)
 
-open Lwt
-open Lwt_io
 open Test
+open Lwt.Infix
 
 let with_async_exception_hook hook f =
   let old_hook = !Lwt.async_exception_hook in
@@ -33,30 +32,22 @@ let with_async_exception_hook hook f =
 
 let local = Unix.ADDR_INET (Unix.inet_addr_loopback, 4321)
 
-(* Add small delay to help ensure [close] system calls are issued on listening
-   sockets as a result of calling [Lwt_io.shutdown_server], before proceeding.
-   In the future, it would be better if [Lwt_io.shutdown_server] produced a
-   thread that could be waited on. *)
-let shutdown_server_and_wait server =
-  Lwt_io.shutdown_server server;
-  Lwt_unix.sleep 0.05
-
-(* Helpers for [establish_server_safe] tests. *)
+(* Helpers for [establish_server] tests. *)
 module Establish_server =
 struct
   let with_client f =
     let handler_finished, notify_handler_finished = Lwt.wait () in
 
-    let server =
-      Lwt_io.establish_server_safe
-        local
-        (fun channels ->
-          Lwt.finalize
-            (fun () -> f channels)
-            (fun () ->
-              Lwt.wakeup notify_handler_finished ();
-              Lwt.return_unit))
-    in
+    Lwt_io.establish_server
+      local
+      (fun channels ->
+        Lwt.finalize
+          (fun () -> f channels)
+          (fun () ->
+            Lwt.wakeup notify_handler_finished ();
+            Lwt.return_unit))
+
+    >>= fun server ->
 
     let client_finished =
       Lwt_io.with_connection
@@ -67,7 +58,7 @@ struct
     in
 
     client_finished >>= fun () ->
-    shutdown_server_and_wait server
+    Lwt_io.shutdown_server server
 
   (* Dirty hack for forcing [Lwt_io.close] to fail, to test response to [close]
      exceptions. Impolitely closes the [n]th last file descriptor allocated by
@@ -137,42 +128,42 @@ let suite = suite "lwt_io" [
   test "auto-flush"
     (fun () ->
        let sent = ref [] in
-       let oc = Lwt_io.make ~mode:output (fun buf ofs len ->
+       let oc = Lwt_io.make ~mode:Lwt_io.output (fun buf ofs len ->
                                             let bytes = Bytes.create len in
                                             Lwt_bytes.blit_to_bytes buf ofs bytes 0 len;
                                             sent := bytes :: !sent;
-                                            return len) in
-       write oc "foo" >>= fun () ->
-       write oc "bar" >>= fun () ->
+                                            Lwt.return len) in
+       Lwt_io.write oc "foo" >>= fun () ->
+       Lwt_io.write oc "bar" >>= fun () ->
        if !sent <> [] then
-         return false
+         Lwt.return false
        else
          Lwt_unix.yield () >>= fun () ->
-         return (!sent = [Bytes.of_string "foobar"]));
+         Lwt.return (!sent = [Bytes.of_string "foobar"]));
 
   test "auto-flush in atomic"
     (fun () ->
        let sent = ref [] in
-       let oc = make ~mode:output (fun buf ofs len ->
+       let oc = Lwt_io.make ~mode:Lwt_io.output (fun buf ofs len ->
                                      let bytes = Bytes.create len in
                                      Lwt_bytes.blit_to_bytes buf ofs bytes 0 len;
                                      sent := bytes :: !sent;
-                                     return len) in
-       atomic
+                                     Lwt.return len) in
+       Lwt_io.atomic
          (fun oc ->
-            write oc "foo" >>= fun () ->
-            write oc "bar" >>= fun () ->
+            Lwt_io.write oc "foo" >>= fun () ->
+            Lwt_io.write oc "bar" >>= fun () ->
             if !sent <> [] then
-              return false
+              Lwt.return false
             else
               Lwt_unix.yield () >>= fun () ->
-              return (!sent = [Bytes.of_string "foobar"]))
+              Lwt.return (!sent = [Bytes.of_string "foobar"]))
          oc);
 
   (* Without the corresponding bugfix, which is to handle ENOTCONN from
      Lwt_unix.shutdown, this test raises an exception from the handler's calls
      to close. *)
-  test "establish_server: shutdown: client closes first"
+  test "establish_server_1: shutdown: client closes first"
     (fun () ->
       let wait_for_client, client_finished = Lwt.wait () in
 
@@ -186,13 +177,13 @@ let suite = suite "lwt_io" [
       in
 
       let server =
-        Lwt_io.establish_server
+        (Lwt_io.Versioned.establish_server_1 [@ocaml.warning "-3"])
           local (fun channels -> Lwt.wakeup run_handler channels)
       in
 
-      with_connection local (fun _ -> Lwt.return_unit) >>= fun () ->
+      Lwt_io.with_connection local (fun _ -> Lwt.return_unit) >>= fun () ->
       Lwt.wakeup client_finished ();
-      shutdown_server_and_wait server >>= fun () ->
+      Lwt_io.shutdown_server server >>= fun () ->
       handler);
 
   (* Counterpart to establish_server: shutdown test. Confirms that shutdown is
@@ -202,23 +193,24 @@ let suite = suite "lwt_io" [
       let wait_for_server, server_finished = Lwt.wait () in
 
       let server =
-        Lwt_io.establish_server local (fun (in_channel, out_channel) ->
-          Lwt.async (fun () ->
-            Lwt_io.close in_channel >>= fun () ->
-            Lwt_io.close out_channel >|= fun () ->
-            Lwt.wakeup server_finished ()))
+        (Lwt_io.Versioned.establish_server_1 [@ocaml.warning "-3"])
+          local (fun (in_channel, out_channel) ->
+            Lwt.async (fun () ->
+              Lwt_io.close in_channel >>= fun () ->
+              Lwt_io.close out_channel >|= fun () ->
+              Lwt.wakeup server_finished ()))
       in
 
-      with_connection local (fun _ ->
+      Lwt_io.with_connection local (fun _ ->
         wait_for_server >>= fun () ->
         Lwt.return_true)
 
       >>= fun result ->
 
-      shutdown_server_and_wait server >|= fun () ->
+      Lwt_io.shutdown_server server >|= fun () ->
       result);
 
-  test "establish_server_safe: implicit close"
+  test "establish_server: implicit close"
     (fun () ->
       let open Establish_server in
 
@@ -242,6 +234,12 @@ let suite = suite "lwt_io" [
       in
 
       run >>= fun () ->
+      (* Give a little time for the close system calls on the connection sockets
+         to complete. The Lwt_io and Lwt_unix APIs do not currently allow
+         binding on the implicit closes of these sockets, so resorting to a
+         delay. *)
+      Lwt_unix.sleep 0.05 >>= fun () ->
+
       is_closed_in !in_channel' >>= fun in_closed_after_handler ->
       is_closed_out !out_channel' >|= fun out_closed_after_handler ->
 
@@ -250,7 +248,7 @@ let suite = suite "lwt_io" [
       in_closed_after_handler &&
       out_closed_after_handler);
 
-  test "establish_server_safe: implicit close on exception"
+  test "establish_server: implicit close on exception"
     (fun () ->
       let open Establish_server in
 
@@ -273,15 +271,18 @@ let suite = suite "lwt_io" [
         run
 
       >>= fun () ->
+      (* See comment in other implicit close test. *)
+      Lwt_unix.sleep 0.05 >>= fun () ->
 
       is_closed_in !in_channel' >>= fun in_closed_after_handler ->
       is_closed_out !out_channel' >|= fun out_closed_after_handler ->
+
       in_closed_after_handler && out_closed_after_handler);
 
   (* This does a simple double close of the channels (second close is implicit).
      If something breaks, the test will finish with an exception, or
      Lwt.async_exception_hook will kill the process. *)
-  test "establish_server_safe: explicit close"
+  test "establish_server: explicit close"
     (fun () ->
       let open Establish_server in
 
@@ -306,7 +307,7 @@ let suite = suite "lwt_io" [
      sockets again, the exception will go to Lwt.async_exception_hook and kill
      the tester. The correct behavior is for implicit close to do nothing if the
      user already tried to close the sockets. *)
-  test "establish_server_safe: no duplicate exceptions"
+  test "establish_server: no duplicate exceptions"
     ~only_if:(fun () -> not Sys.win32)
     (fun () ->
       let open Establish_server in
@@ -317,7 +318,7 @@ let suite = suite "lwt_io" [
           | Unix.Unix_error (Unix.EBADF, _, _) ->
             exceptions_observed := !exceptions_observed + 1;
             Lwt.return_unit
-          | exn -> Lwt.fail exn)
+          | exn -> Lwt.fail exn) [@ocaml.warning "-4"]
       in
 
       let run =
@@ -334,7 +335,7 @@ let suite = suite "lwt_io" [
   (* Screws up the open sockets so closing them fails with EBADF. Then, raises
      an exception from the handler. Checks that the handler exception arrives
      at Lwt.async_exception_hook before the exceptions from implicit close. *)
-  test "establish_server_safe: order of exceptions"
+  test "establish_server: order of exceptions"
     ~only_if:(fun () -> not Sys.win32)
     (fun () ->
       let open Establish_server in
@@ -343,15 +344,15 @@ let suite = suite "lwt_io" [
       let correct_exceptions = ref true in
       let see_exception exn =
         exceptions_observed := !exceptions_observed + 1;
-        match !exceptions_observed, exn with
+        (match !exceptions_observed, exn with
         | 1, Exit
         | (2 | 3), Unix.Unix_error (Unix.EBADF, _, _) -> ()
-        | _ -> correct_exceptions := false
+        | _ -> correct_exceptions := false) [@ocaml.warning "-4"]
       in
 
       let run () =
         Establish_server.with_client
-          (fun (in_channel, out_channel) ->
+          (fun (_in_channel, _out_channel) ->
             close_last_fd 1;
             raise Exit)
       in
@@ -363,11 +364,11 @@ let suite = suite "lwt_io" [
     (fun () ->
       let open Establish_server in
 
-      let in_channel' = ref stdin in
-      let out_channel' = ref stdout in
+      let in_channel' = ref Lwt_io.stdin in
+      let out_channel' = ref Lwt_io.stdout in
 
-      let server =
-        Lwt_io.establish_server_safe local (fun _ -> Lwt.return_unit) in
+      Lwt_io.establish_server local (fun _ -> Lwt.return_unit)
+      >>= fun server ->
 
       Lwt_io.with_connection local (fun (in_channel, out_channel) ->
         in_channel' := in_channel;
@@ -375,7 +376,7 @@ let suite = suite "lwt_io" [
         Lwt.return_unit)
 
       >>= fun () ->
-      shutdown_server_and_wait server >>= fun () ->
+      Lwt_io.shutdown_server server >>= fun () ->
       is_closed_in !in_channel' >>= fun in_closed ->
       is_closed_out !out_channel' >|= fun out_closed ->
       in_closed && out_closed);
@@ -394,17 +395,15 @@ let suite = suite "lwt_io" [
           | Unix.Unix_error (Unix.EBADF, _, _) ->
             exceptions_observed := !exceptions_observed + 1;
             Lwt.return_unit
-          | exn -> Lwt.fail exn)
+          | exn -> Lwt.fail exn) [@ocaml.warning "-4"]
       in
 
       let handler_started, notify_handler_started = Lwt.wait () in
       let finish_server, resume_server = Lwt.wait () in
-      let server =
-        Lwt_io.establish_server_safe local
-          (fun _ ->
-            Lwt.wakeup notify_handler_started ();
-            finish_server)
-      in
+      Lwt_io.establish_server local
+        (fun _ ->
+          Lwt.wakeup notify_handler_started ();
+          finish_server) >>= fun server ->
 
       expecting_ebadf (fun () ->
         Lwt_io.with_connection local (fun (in_channel, out_channel) ->
@@ -415,6 +414,6 @@ let suite = suite "lwt_io" [
 
       >>= fun () ->
       Lwt.wakeup resume_server ();
-      shutdown_server_and_wait server >|= fun () ->
+      Lwt_io.shutdown_server server >|= fun () ->
       !exceptions_observed = 2);
 ]

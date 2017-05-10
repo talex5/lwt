@@ -128,11 +128,26 @@ end
 (** {2 Predefined engines} *)
 
 type ev_loop
+
+module Ev_backend :
+sig
+  type t
+  val default : t
+  val select : t
+  val poll : t
+  val epoll : t
+  val kqueue : t
+  val devpoll : t
+  val port : t
+
+  val pp : Format.formatter -> t -> unit
+end
+
   (** Type of libev loops. *)
 
 (** Engine based on libev. If not compiled with libev support, the
     creation of the class will raise {!Lwt_sys.Not_available}. *)
-class libev : object
+class libev : ?backend:Ev_backend.t -> unit -> object
   inherit t
 
   val loop : ev_loop
@@ -192,3 +207,32 @@ val set : ?transfer : bool -> ?destroy : bool -> #t -> unit
 
       If [destroy] is [true] (the default) then the current engine is
       destroyed before being replaced. *)
+
+module Versioned :
+sig
+  class libev_1 : object
+    inherit t
+    val loop : ev_loop
+    method loop : ev_loop
+  end
+  [@@ocaml.deprecated
+" Deprecated in favor of Lwt_engine.libev. See
+  https://github.com/ocsigen/lwt/pull/269"]
+  (** Old version of {!Lwt_engine.libev}. The current {!Lwt_engine.libev} allows
+      selecting the libev back end.
+
+      @deprecated Use {!Lwt_engine.libev}.
+      @since 2.7.0 *)
+
+  class libev_2 : ?backend:Ev_backend.t -> unit -> object
+    inherit t
+    val loop : ev_loop
+    method loop : ev_loop
+  end
+  [@@ocaml.deprecated
+" In Lwt >= 3.0.0, this is an alias for Lwt_engine.libev."]
+  (** Since Lwt 3.0.0, this is just an alias for {!Lwt_engine.libev}.
+
+      @deprecated Use {!Lwt_engine.libev}.
+      @since 2.7.0 *)
+end

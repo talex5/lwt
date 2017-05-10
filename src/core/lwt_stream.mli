@@ -23,34 +23,54 @@
 (** Data streams *)
 
 type 'a t
-  (** Type of a stream holding values of type ['a] *)
+(** A stream holding values of type ['a].
 
-(** Naming convention: in this module all function taking a function
-    which is applied to all element of the streams are suffixed by:
+    Naming convention: in this module, all functions applying a function
+    to each element of a stream are suffixed by:
 
     - [_s] when the function returns a thread and calls are serialised
     - [_p] when the function returns a thread and calls are parallelised
-*)
+
+    This module may undergo redesign or deprecation in the future. See
+    {{:https://github.com/ocsigen/lwt/issues/250} Flaws of [Lwt_stream]}. In
+    the meantime, you may want to consider using alternatives such as
+    {{:https://github.com/c-cube/lwt-pipe} lwt-pipe}. *)
 
 (** {2 Construction} *)
 
 val from : (unit -> 'a option Lwt.t) -> 'a t
-  (** [from f] creates an stream from the given input function. [f] is
+  (** [from f] creates a stream from the given input function. [f] is
       called each time more input is needed, and the stream ends when
-      [f] returns [None]. *)
+      [f] returns [None].
+
+      If [f], or the thread produced by [f], raises an exception, that exception
+      is forwarded to the consumer of the stream (for example, a caller of
+      {!get}). Note that this does not end the stream. A subsequent attempt to
+      read from the stream will cause another call to [f], which may succeed
+      with a value. *)
 
 val from_direct : (unit -> 'a option) -> 'a t
   (** [from_direct f] does the same as {!from} but with a function
-      that does not return a thread. It is better than wrapping [f]
-      into a function which returns a thread. *)
+      that does not return a thread. It is preferred that this
+      function be used rather than wrapping [f] into a function which
+      returns a thread.
+
+      The behavior when [f] raises an exception is the same as for {!from},
+      except that [f] does not produce a thread. *)
 
 exception Closed
   (** Exception raised by the push function of a push-stream when
-      pushing an element after the end of stream ([= None]) have been
+      pushing an element after the end of stream ([= None]) has been
       pushed. *)
 
 val create : unit -> 'a t * ('a option -> unit)
-  (** [create ()] returns a new stream and a push function. *)
+  (** [create ()] returns a new stream and a push function.
+
+      To notify the stream's consumer of errors, either use a separate
+      communication channel, or use a
+      {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Pervasives.html#TYPEresult}
+      [result]} stream. There is no way to push an exception into a
+      push-stream. *)
 
 val create_with_reference : unit -> 'a t * ('a option -> unit) * ('b -> unit)
   (** [create_with_reference ()] returns a new stream and a push
@@ -89,7 +109,7 @@ class type ['a] bounded_push = object
 
   method close : unit
     (** Closes the stream. Any thread currently blocked on {!push}
-        will fail with {!Closed}. *)
+        fails with {!Closed}. *)
 
   method count : int
     (** Number of elements in the stream queue. *)
@@ -117,14 +137,19 @@ val create_bounded : int -> 'a t * 'a bounded_push
       It raises [Invalid_argument] if [size < 0]. *)
 
 val of_list : 'a list -> 'a t
-  (** [of_list l] creates a stream returning all elements of [l] *)
+(** [of_list l] creates a stream returning all elements of [l]. The elements are
+    pushed into the stream immediately, resulting in a closed stream (in the
+    sense of {!is_closed}). *)
 
 val of_array : 'a array -> 'a t
-  (** [of_array a] creates a stream returning all elements of [a] *)
+(** [of_array a] creates a stream returning all elements of [a]. The elements
+    are pushed into the stream immediately, resulting in a closed stream (in the
+    sense of {!is_closed}). *)
 
 val of_string : string -> char t
-  (** [of_string str] creates a stream returning all characters of
-      [str] *)
+(** [of_string str] creates a stream returning all characters of [str]. The
+    characters are pushed into the stream immediately, resulting in a closed
+    stream (in the sense of {!is_closed}). *)
 
 val clone : 'a t -> 'a t
   (** [clone st] clone the given stream. Operations on each stream
@@ -170,11 +195,11 @@ val npeek : int -> 'a t -> 'a list Lwt.t
       without removing them. *)
 
 val get : 'a t -> 'a option Lwt.t
-  (** [get st] remove and returns the first element of the stream, if
+  (** [get st] removes and returns the first element of the stream, if
       any. *)
 
 val nget : int -> 'a t -> 'a list Lwt.t
-  (** [nget n st] remove and returns at most the first [n] elements of
+  (** [nget n st] removes and returns at most the first [n] elements of
       [st]. *)
 
 val get_while : ('a -> bool) -> 'a t -> 'a list Lwt.t
@@ -183,18 +208,17 @@ val get_while_s : ('a -> bool Lwt.t) -> 'a t -> 'a list Lwt.t
       elements satisfy [f]. *)
 
 val next : 'a t -> 'a Lwt.t
-  (** [next st] remove and returns the next element of the stream, of
-      fail with {!Empty} if the stream is empty. *)
+  (** [next st] removes and returns the next element of the stream or
+      fails with {!Empty}, if the stream is empty. *)
 
 val last_new : 'a t -> 'a Lwt.t
   (** [last_new st] returns the last element that can be obtained
-      without sleepping, or wait for one if no one is already
-      available.
+      without sleeping, or wait for one if none is available.
 
-      If fails with {!Empty} if the stream has no more elements *)
+      It fails with {!Empty} if the stream has no more elements. *)
 
 val junk : 'a t -> unit Lwt.t
-  (** [junk st] remove the first element of [st]. *)
+  (** [junk st] removes the first element of [st]. *)
 
 val njunk : int -> 'a t -> unit Lwt.t
   (** [njunk n st] removes at most the first [n] elements of the
@@ -207,11 +231,11 @@ val junk_while_s : ('a -> bool Lwt.t) -> 'a t -> unit Lwt.t
 
 val junk_old : 'a t -> unit Lwt.t
   (** [junk_old st] removes all elements that are ready to be read
-      without yeilding from [st].
+      without yielding from [st].
 
-      For example the [read_password] function of [Lwt_read_line] use
-      that to junk key previously typed by the user.
-  *)
+      For example, the [read_password] function of [Lwt_read_line]
+      uses it to flush keys previously typed by the user.
+   *)
 
 val get_available : 'a t -> 'a list
   (** [get_available st] returns all available elements of [l] without
@@ -239,16 +263,18 @@ val closed : 'a t -> unit Lwt.t
       @since 2.6.0 *)
 
 val on_termination : 'a t -> (unit -> unit) -> unit
+  [@@ocaml.deprecated " Bind on Lwt_stream.closed."]
   (** [on_termination st f] executes [f] when the end of the stream [st]
       is reached. Note that the stream may still contain elements if
       {!peek} or similar was used.
 
-      @deprecated Use [closed]. *)
+      @deprecated Use {!closed}. *)
 
 val on_terminate : 'a t -> (unit -> unit) -> unit
-  (** Same as [on_termination].
+  [@@ocaml.deprecated " Bind on Lwt_stream.closed."]
+  (** Same as {!on_termination}.
 
-      @deprecated Use [closed]. *)
+      @deprecated Use {!closed}. *)
 
 (** {2 Stream transversal} *)
 
@@ -270,7 +296,7 @@ val on_terminate : 'a t -> (unit -> unit) -> unit
 
 val choose : 'a t list -> 'a t
   (** [choose l] creates an stream from a list of streams. The
-      resulting stream will returns elements returned by any stream of
+      resulting stream will return elements returned by any stream of
       [l] in an unspecified order. *)
 
 val map : ('a -> 'b) -> 'a t -> 'b t
@@ -279,7 +305,7 @@ val map_s : ('a -> 'b Lwt.t) -> 'a t -> 'b t
 
 val filter : ('a -> bool) -> 'a t -> 'a t
 val filter_s : ('a -> bool Lwt.t) -> 'a t -> 'a t
-  (** [filter f st] keeps only value [x] such that [f x] is [true] *)
+  (** [filter f st] keeps only values, [x], such that [f x] is [true] *)
 
 val filter_map : ('a -> 'b option) -> 'a t -> 'b t
 val filter_map_s : ('a -> 'b option Lwt.t) -> 'a t -> 'b t
@@ -297,7 +323,7 @@ val fold_s : ('a -> 'b -> 'b Lwt.t) -> 'a t -> 'b -> 'b Lwt.t
 val iter : ('a -> unit) -> 'a t -> unit Lwt.t
 val iter_p : ('a -> unit Lwt.t) -> 'a t -> unit Lwt.t
 val iter_s : ('a -> unit Lwt.t) -> 'a t -> unit Lwt.t
-  (** [iter f s] iterates over all elements of the stream *)
+  (** [iter f s] iterates over all elements of the stream. *)
 
 val find : ('a -> bool) -> 'a t -> 'a option Lwt.t
 val find_s : ('a -> bool Lwt.t) -> 'a t -> 'a option Lwt.t
@@ -305,11 +331,11 @@ val find_s : ('a -> bool Lwt.t) -> 'a t -> 'a option Lwt.t
 
 val find_map : ('a -> 'b option) -> 'a t -> 'b option Lwt.t
 val find_map_s : ('a -> 'b option Lwt.t) -> 'a t -> 'b option Lwt.t
-  (** [find f s] find and map at the same time. *)
+  (** [find_map f s] find and map at the same time. *)
 
 val combine : 'a t -> 'b t -> ('a * 'b) t
-  (** [combine s1 s2] combine two streams. The stream will ends when
-      the first stream ends. *)
+  (** [combine s1 s2] combines two streams. The stream will end when
+      either stream ends. *)
 
 val append : 'a t -> 'a t -> 'a t
   (** [append s1 s2] returns a stream which returns all elements of
@@ -321,17 +347,18 @@ val concat : 'a t t -> 'a t
 val flatten : 'a list t -> 'a t
   (** [flatten st = map_list (fun l -> l) st] *)
 
-(** A value or an error. *)
-type 'a result =
-  | Value of 'a
-  | Error of exn
+val wrap_exn : 'a t -> 'a Lwt.result t
+(** [wrap_exn s] is a stream [s'] such that each time [s] yields a value [v],
+    [s'] yields [Result.Ok v], and when the source of [s] raises an exception
+    [e], [s'] yields [Result.Error e].
 
-val map_exn : 'a t -> 'a result t
-  (** [map_exn s] returns a stream that captures all exceptions raised
-      by the source of the stream (the function passed to {!from}).
+    Note that push-streams (as returned by {!create}) never raise exceptions.
 
-      Note that for push-streams (as returned by {!create}) all
-      elements of the mapped streams are values. *)
+    If the stream source keeps raising the same exception [e] each time the
+    stream is read, [s'] is unbounded. Reading it will produce [Result.Error e]
+    indefinitely.
+
+    @since 2.7.0 *)
 
 (** {2 Parsing} *)
 
@@ -354,3 +381,32 @@ val hexdump : char t -> string t
         let () = Lwt_main.run (Lwt_io.write_lines Lwt_io.stdout (Lwt_stream.hexdump (Lwt_io.read_lines Lwt_io.stdin)))
       ]}
   *)
+
+(** {2 Deprecated} *)
+
+type 'a result =
+  | Value of 'a
+  | Error of exn
+  [@@ocaml.deprecated
+" This type is being replaced by Lwt.result and the corresponding function
+ Lwt_stream.wrap_exn."]
+(** A value or an error.
+
+    @deprecated Replaced by {!wrap_exn}, which uses {!Lwt.result}. *)
+
+[@@@ocaml.warning "-3"]
+val map_exn : 'a t -> 'a result t
+  [@@ocaml.deprecated " Use Lwt_stream.wrap_exn"]
+(** [map_exn s] returns a stream that captures all exceptions raised
+    by the source of the stream (the function passed to {!from}).
+
+    Note that for push-streams (as returned by {!create}) all
+    elements of the mapped streams are values.
+
+    If the stream source keeps raising the same exception [e] each time the
+    stream is read, the stream produced by [map_exn] is unbounded. Reading it
+    will produce [Lwt_stream.Error e] indefinitely.
+
+    @deprecated Use {!wrap_exn}. *)
+
+[@@@ocaml.warning "+3"]

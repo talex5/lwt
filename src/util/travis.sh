@@ -8,12 +8,20 @@ packages_apt () {
         4.01) PPA=avsm/ocaml41+opam12;;
         4.02) PPA=avsm/ocaml42+opam12;;
         4.03) PPA=avsm/ocaml42+opam12; DO_SWITCH=yes;;
+        4.04) PPA=avsm/ocaml42+opam12; DO_SWITCH=yes;;
+        4.05) PPA=avsm/ocaml42+opam12; DO_SWITCH=yes;;
            *) echo Unsupported compiler $COMPILER; exit 1;;
     esac
 
     sudo add-apt-repository -y ppa:$PPA
     sudo apt-get update -qq
-    sudo apt-get install -qq ocaml-nox opam
+
+    if [ -z "$DO_SWITCH" ]
+    then
+        sudo apt-get install -qq ocaml-nox
+    fi
+
+    sudo apt-get install -qq opam
 
     if [ "$LIBEV" = yes ]
     then
@@ -23,14 +31,20 @@ packages_apt () {
 
 packages_homebrew () {
     brew update > /dev/null
+
+    if [ "$COMPILER" = system ]
+    then
+        brew install ocaml
+    else
+        DO_SWITCH=yes
+    fi
+
     brew install gtk+ opam
 
     if [ "$LIBEV" = yes ]
     then
         brew install libev
     fi
-
-    DO_SWITCH=yes
 }
 
 packages_macports () {
@@ -68,11 +82,21 @@ packages
 
 # Initialize OPAM and switch to the right compiler, if necessary.
 case $COMPILER in
-    4.01) SWITCH=4.01.0;;
-    4.02) SWITCH=4.02.3;;
-    4.03) SWITCH=4.03.0;;
+    4.01) OCAML_VERSION=4.01.0;;
+    4.02) OCAML_VERSION=4.02.3;;
+    4.03) OCAML_VERSION=4.03.0;;
+    4.04) OCAML_VERSION=4.04.0;;
+    4.05) OCAML_VERSION=4.05.0+beta2;;
+    system) OCAML_VERSION=`ocamlc -version`;;
        *) echo Unsupported compiler $COMPILER; exit 1;;
 esac
+
+if [ "$FLAMBDA" = yes ]
+then
+    SWITCH="$OCAML_VERSION+flambda"
+else
+    SWITCH="$OCAML_VERSION"
+fi
 
 if [ -n "$DO_SWITCH" ]
 then
@@ -84,27 +108,46 @@ fi
 eval `opam config env`
 
 ACTUAL_COMPILER=`ocamlc -version`
-if [ "$ACTUAL_COMPILER" != "$SWITCH" ]
+if [ "$ACTUAL_COMPILER" != "$OCAML_VERSION" ]
 then
-    echo Expected OCaml $SWITCH, but $ACTUAL_COMPILER is installed
+    echo Expected OCaml $OCAML_VERSION, but $ACTUAL_COMPILER is installed
 fi
 
 
 
-# Install optional dependencies.
+# Pin Lwt, install dependencies, and then install Lwt. Lwt is installed
+# separately because we want to keep the build directory for running the tests.
+opam pin add -y --no-action .
+
+opam install -y --deps-only lwt
+opam install -y camlp4
 if [ "$LIBEV" = yes ]
 then
     opam install -y conf-libev
 fi
 
+opam install --keep-build-dir --verbose lwt
 
+# Pin additional packages, generate their build systems, and install them. There
+# aren't any specific tests for these packages. Installation itself is the only
+# test. Build system generation requires OASIS; this should have been installed
+# while installing dependencies of Lwt.
+install_extra_package () {
+    PACKAGE=$1
+    ( cd src/$PACKAGE/ && oasis setup -setup-update none )
+    opam pin add -y --no-action src/$PACKAGE/
+    opam install -y --verbose lwt_$PACKAGE
+}
 
-# Pin Lwt, install its optional dependencies, then install Lwt and run the
-# tests.
-opam pin add -y --no-action .
-opam install -y `opam list --short --depopts --required-by lwt | grep -v '^conf-'`
+install_extra_package react
+install_extra_package ssl
+install_extra_package glib
+
+# Build and run the tests.
 opam install -y ounit
-opam install -y --build-test --keep-build-dir --verbose lwt
+cd `opam config var lib`/../build/lwt.*
+ocaml setup.ml -configure --enable-tests
+make test
 
 
 
@@ -114,7 +157,5 @@ then
     ! opam list -i conf-libev
 fi
 
-if [ "$COMPILER" != 4.01 ]
-then
-    opam list -i ppx_tools
-fi
+opam list -i ppx_tools
+! opam list -i batteries

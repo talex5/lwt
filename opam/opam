@@ -1,25 +1,28 @@
 opam-version: "1.2"
 name: "lwt"
-version: "2.6.0"
-maintainer: "Anton Bachin <antonbachin@yahoo.com>"
+version: "dev"
+maintainer: [
+  "Anton Bachin <antonbachin@yahoo.com>"
+  "Mauricio Fernandez <mfp@acm.org>"
+  "Simon Cruanes <simon.cruanes.2007@m4x.org>"
+]
 authors: [
   "Jérôme Vouillon"
   "Jérémie Dimino"
 ]
 homepage: "https://github.com/ocsigen/lwt"
-dev-repo: "https://github.com/ocsigen/lwt.git"
-bug-reports: "http://github.com/ocsigen/lwt/issues"
+doc: "https://ocsigen.org/lwt/manual/"
+bug-reports: "https://github.com/ocsigen/lwt/issues"
 license: "LGPL with OpenSSL linking exception"
+dev-repo: "https://github.com/ocsigen/lwt.git"
 build: [
+  [make "setup"]
   ["ocaml" "setup.ml" "-configure"
     "--prefix" prefix
     "--%{conf-libev:enable}%-libev"
     "--%{camlp4:enable}%-camlp4"
-    "--%{react:enable}%-react"
-    "--%{ssl:enable}%-ssl"
     "--%{base-unix:enable}%-unix"
     "--%{base-threads:enable}%-preemptive"
-    "--%{lablgtk:enable}%-glib"
     "--%{ppx_tools:enable}%-ppx"]
   [make "build"]
 ]
@@ -32,24 +35,32 @@ remove: [[ "ocamlfind" "remove" "lwt" ]]
 depends: [
   "ocamlfind" {build & >= "1.5.0"}
   "ocamlbuild" {build}
-  "base-bytes"
   "result"
-  ( "base-no-ppx" | "ppx_tools" )
+  "cppo" {build}
+  # See https://github.com/ocsigen/lwt/issues/266
+  ( "base-no-ppx" | "ppx_tools" {build} )
   ## OASIS is not required in released version
-  "oasis" {build & >= "0.4.7"}
+  "oasis" {build & >= "0.4.8"}
 ]
 depopts: [
   "base-threads"
   "base-unix"
   "conf-libev"
   "camlp4"
-  "ssl"
-  "lablgtk"
-  "react"
 ]
 conflicts: [
-  "react" {< "1.0.0"}
-  "ssl" {< "0.5.0"}
   "ppx_tools" {< "1.0.0" }
 ]
-available: [ocaml-version >= "4.01.0" & compiler != "4.02.1+BER"]
+available: [ocaml-version >= "4.02.0" & compiler != "4.02.1+BER"]
+messages: [
+  "For module Lwt_ssl, please install package lwt_ssl"
+  {ssl:installed & !lwt_ssl:installed}
+  "For module Lwt_glib, please install package lwt_glib"
+  {lablgtk:installed & !lwt_glib:installed}
+  "For module Lwt_react, please install package lwt_react"
+  {react:installed & !lwt_react:installed}
+]
+post-messages: [
+  "Lwt 3.0.0 made some minor breaking changes, announced in 2.7.0. See
+  https://github.com/ocsigen/lwt/issues/308"
+]

@@ -258,7 +258,7 @@ val read : ?count : int -> input_channel -> string Lwt.t
       returns [""] if the end of input is reached. If [count] is not
       specified, it reads all bytes until the end of input. *)
 
-val read_into : input_channel -> Bytes.t -> int -> int -> int Lwt.t
+val read_into : input_channel -> bytes -> int -> int -> int Lwt.t
   (** [read_into ic buffer offset length] reads up to [length] bytes,
       stores them in [buffer] at offset [offset], and returns the
       number of bytes read.
@@ -266,7 +266,7 @@ val read_into : input_channel -> Bytes.t -> int -> int -> int Lwt.t
       Note: [read_into] does not raise [End_of_file], it returns a
       length of [0] instead. *)
 
-val read_into_exactly : input_channel -> Bytes.t -> int -> int -> unit Lwt.t
+val read_into_exactly : input_channel -> bytes -> int -> int -> unit Lwt.t
   (** [read_into_exactly ic buffer offset length] reads exactly
       [length] bytes and stores them in [buffer] at offset [offset].
 
@@ -301,7 +301,7 @@ val write_line : output_channel -> string -> unit Lwt.t
 val write_lines : output_channel -> string Lwt_stream.t -> unit Lwt.t
   (** [write_lines oc lines] writes all lines of [lines] to [oc] *)
 
-val write_from : output_channel -> Bytes.t -> int -> int -> int Lwt.t
+val write_from : output_channel -> bytes -> int -> int -> int Lwt.t
   (** [write_from oc buffer offset length] writes up to [length] bytes
       to [oc], from [buffer] at offset [offset] and returns the number
       of bytes actually written *)
@@ -309,7 +309,7 @@ val write_from : output_channel -> Bytes.t -> int -> int -> int Lwt.t
 val write_from_string : output_channel -> string -> int -> int -> int Lwt.t
   (** See {!write}. *)
 
-val write_from_exactly : output_channel -> Bytes.t -> int -> int -> unit Lwt.t
+val write_from_exactly : output_channel -> bytes -> int -> int -> unit Lwt.t
   (** [write_from_exactly oc buffer offset length] writes all [length]
       bytes from [buffer] at offset [offset] to [oc] *)
 
@@ -413,61 +413,46 @@ val with_connection :
 type server
   (** Type of a server *)
 
-(**/**)
-
-val establish_server_safe :
-  ?fd : Lwt_unix.file_descr ->
-  ?buffer_size : int ->
-  ?backlog : int ->
-  Unix.sockaddr -> (input_channel * output_channel -> unit Lwt.t) -> server
-  (** [establish_server_safe ?fd ?buffer_size ?backlog sockaddr f] creates a
-      server which listens for incoming connections. New connections are passed
-      to [f]. When threads returned by [f] complete, the connections are closed
-      automatically.
-
-      The server does not wait for each thread. It begins accepting new
-      connections immediately.
-
-      If a thread raises an exception, it is passed to
-      [!Lwt.async_exception_hook]. Likewise, if the automatic [close] of a
-      connection raises an exception, it is passed to
-      [!Lwt.async_exception_hook]. To handle exceptions raised by [close], call
-      it manually inside [f]. *)
-
-(**/**)
-
 val establish_server :
   ?fd : Lwt_unix.file_descr ->
   ?buffer_size : int ->
   ?backlog : int ->
-  Unix.sockaddr -> (input_channel * output_channel -> unit) -> server
-  (** [establish_server ?fd ?buffer_size ?backlog sockaddr f] creates a server
-      which listens for incoming connections. New connections are passed to [f].
+  ?no_close : bool ->
+  Unix.sockaddr -> (input_channel * output_channel -> unit Lwt.t) ->
+    server Lwt.t
+(** [establish_server sockaddr f] creates a server which listens for incoming
+    connections on [sockaddr]. New connections are passed to [f]. The
+    connections are closed automatically as promises returned by [f] complete.
 
-      [establish_server] does not start separate threads for running [f], nor
-      close the connections passed to [f]. Thus, the skeleton of a practical
-      server based on [establish_server] might look like this:
+    To prevent automatic closing, apply [establish_server] with
+    [~no_close:true].
 
-      {[
-        Lwt_io.establish_server address (fun (ic, oc) ->
-          Lwt.async (fun () ->
+    [~fd] can be specified to use an existing file descriptor for listening.
+    Otherwise, the default is for [establish_server] to create a fresh one.
 
-            (* ... *)
+    [~backlog] is the argument passed to {!Lwt_unix.listen}.
 
-            Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit) >>=
-            Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit)))
-      ]}
+    The server does not wait on each promise returned by [f] before accepting
+    more connections. It accepts connections concurrently.
 
-      If [fd] is not specified, a fresh file descriptor will be created for
-      listening.
+    If [f] raises an exception, or the promise fails, the exception is passed to
+    {!Lwt.async_exception_hook}. Likewise, if the automatic [close] of a
+    connection raises an exception, it is passed to {!Lwt.async_exception_hook}.
+    To robustly handle these exceptions, you should call {!close} manually
+    inside [f], and wrap it in your own handler.
 
-      [backlog] is the argument passed to [Lwt_unix.listen]. *)
+    The returned promise (a [server Lwt.t]) resolves when the server's listening
+    socket is bound to [sockaddr], right before the server first calls [accept].
 
-val shutdown_server : server -> unit
-  (** Close the given server's listening socket. This function does not wait for
-      the close operation to actually complete. It does not affect the sockets
-      of connections that have already been accepted, i.e. passed to [f] by
-      [establish_server] or [establish_server_safe]. *)
+    @since 3.0.0 *)
+
+val shutdown_server : server -> unit Lwt.t
+(** Closes the given server's listening socket. The returned promise resolves
+    when the [close(2)] system call completes. This function does not affect the
+    sockets of connections that have already been accepted, i.e. passed to [f]
+    by {!establish_server}.
+
+    @since 3.0.0 *)
 
 val lines_of_file : file_name -> string Lwt_stream.t
   (** [lines_of_file name] returns a stream of all lines of the file
@@ -580,3 +565,57 @@ val set_default_buffer_size : int -> unit
 
       @raise Invalid_argument if the given size is smaller than [16]
       or greater than [Sys.max_string_length] *)
+
+(** Versioned variants of APIs undergoing breaking changes. *)
+module Versioned :
+sig
+  val establish_server_1 :
+    ?fd : Lwt_unix.file_descr ->
+    ?buffer_size : int ->
+    ?backlog : int ->
+    Unix.sockaddr -> (input_channel * output_channel -> unit) ->
+      server
+    [@@ocaml.deprecated
+" Deprecated in favor of Lwt_io.establish_server. See
+   https://github.com/ocsigen/lwt/pull/258"]
+  (** Old version of {!Lwt_io.establish_server}. The current
+      {!Lwt_io.establish_server} automatically closes channels passed to the
+      callback, and notifies the caller when the server's listening socket is
+      bound.
+
+      @deprecated Use {!Lwt_io.establish_server}.
+      @since 2.7.0 *)
+
+  val establish_server_2 :
+    ?fd : Lwt_unix.file_descr ->
+    ?buffer_size : int ->
+    ?backlog : int ->
+    ?no_close : bool ->
+    Unix.sockaddr -> (input_channel * output_channel -> unit Lwt.t) ->
+      server Lwt.t
+    [@@ocaml.deprecated
+" In Lwt >= 3.0.0, this is an alias for Lwt_io.establish_server."]
+  (** Since Lwt 3.0.0, this is just an alias for {!Lwt_io.establish_server}.
+
+      @deprecated Use {!Lwt_io.establish_server}.
+      @since 2.7.0 *)
+
+  val shutdown_server_1 : server -> unit
+    [@@ocaml.deprecated
+" Deprecated in favor of Lwt_io.shutdown_server. See
+   https://github.com/ocsigen/lwt/issues/259"]
+  (** Old version of {!Lwt_io.shutdown_server}. The current
+      {!Lwt_io.shutdown_server} returns a promise, which resolves when the
+      server's listening socket is closed.
+
+      @deprecated Use {!Lwt_io.shutdown_server}.
+      @since 2.7.0 *)
+
+  val shutdown_server_2 : server -> unit Lwt.t
+    [@@ocaml.deprecated
+" In Lwt >= 3.0.0, this is an alias for Lwt_io.shutdown_server."]
+  (** Since Lwt 3.0.0, this is just an alias for {!Lwt_io.shutdown_server}.
+
+      @deprecated Use {!Lwt_io.shutdown_server}.
+      @since 2.7.0 *)
+end

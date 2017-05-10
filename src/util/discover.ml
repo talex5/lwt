@@ -94,6 +94,15 @@ external test : unit -> unit = \"lwt_test\"
 let () = test ()
 "
 
+let trivial_code = "
+#include <caml/mlvalues.h>
+
+CAMLprim value lwt_test(value Unit)
+{
+  return Val_unit;
+}
+"
+
 let pthread_code = "
 #include <caml/mlvalues.h>
 #include <pthread.h>
@@ -200,7 +209,8 @@ let fdatasync_code = "
 
 CAMLprim value lwt_test(value Unit)
 {
-  fdatasync(0);
+  int (*fdatasyncp)(int) = fdatasync;
+  fdatasyncp(0);
   return Val_unit;
 }
 "
@@ -279,6 +289,18 @@ CAMLprim value lwt_test() {
   m = (double)NANOSEC(buf, m);
   c = (double)NANOSEC(buf, c);
   return Val_unit;
+}
+"
+
+let bsd_mincore_code = "
+#include <unistd.h>
+#include <sys/mman.h>
+#include <caml/mlvalues.h>
+
+CAMLprim value lwt_test()
+{
+    int (*mincore_ptr)(const void*, size_t, char*) = mincore;
+    return Val_int(mincore_ptr == mincore_ptr);
 }
 "
 
@@ -525,6 +547,18 @@ let () =
              safe_remove (Filename.chop_extension !caml_file ^ ".cmi");
              safe_remove (Filename.chop_extension !caml_file ^ ".cmo"));
 
+  let exit status =
+    if status <> 0 then begin
+      if !debug then printf "
+See %s for more details.
+      " !log_file
+      else printf "
+Run with DEBUG=y for more details.
+      ";
+    end;
+    exit status
+  in
+
   let setup_data = ref [] in
 
   (* Test for pkg-config. *)
@@ -535,6 +569,10 @@ let () =
   (* Not having pkg-config is not fatal. *)
   let have_pkg_config = !not_available = [] in
   not_available := [];
+
+  let test_basic_compilation () =
+    test_code ([], []) trivial_code
+  in
 
   let test_libev () =
     let opt, lib =
@@ -599,6 +637,14 @@ let () =
     fprintf config "#define NANOSEC%s\n" conversion
   in
 
+  if not (test_basic_compilation ()) then begin
+    printf "
+Error: failed to compile a trivial ocaml toplevel.
+You may be missing core components (compiler, ncurses, etc)
+";
+    exit 1
+  end;
+
   test_feature ~do_check:!use_libev "libev" "HAVE_LIBEV" test_libev;
   test_feature ~do_check:!use_pthread "pthread" "HAVE_PTHREAD" test_pthread;
   test_feature ~do_check:!use_glib "glib" "" test_glib;
@@ -651,6 +697,8 @@ Lwt can use pthread or the win32 API.
     "netdb_reentrant" "HAVE_NETDB_REENTRANT" (fun () -> test_code ([], []) netdb_reentrant_code);
   test_feature ~do_check "reentrant gethost*" "HAVE_REENTRANT_HOSTENT" (fun () -> test_code ([], []) hostent_reentrant_code);
   test_nanosecond_stat ();
+  test_feature ~do_check "BSD mincore" "HAVE_BSD_MINCORE" (fun () ->
+    test_code (["-Werror"], []) bsd_mincore_code);
 
   let get_cred_vars = [
     "HAVE_GET_CREDENTIALS_LINUX";
@@ -681,11 +729,15 @@ Lwt can use pthread or the win32 API.
   end else begin
     output_string config_ml "let android = false\n"
   end;
-  if !libev_default then begin
-    output_string config_ml "let libev_default = true\n"
-  end else begin
-    output_string config_ml "let libev_default = false\n"
-  end;
+
+  let () =
+    let force_libev_default =
+      try Sys.getenv "LWT_FORCE_LIBEV_BY_DEFAULT" = "yes"
+      with Not_found -> false
+    in
+    let libev_default = !libev_default || force_libev_default in
+    Printf.fprintf config_ml "let libev_default = %b\n" libev_default
+  in
 
   fprintf config "#endif\n";
 

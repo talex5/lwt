@@ -338,6 +338,9 @@ type open_flag =
   | O_RSYNC
   | O_SHARE_DELETE
   | O_CLOEXEC
+#if OCAML_VERSION >= (4, 05, 0)
+  | O_KEEPEXEC
+#endif
 
 val openfile : string -> open_flag list -> file_perm -> file_descr Lwt.t
   (** Wrapper for [Unix.openfile]. *)
@@ -346,7 +349,7 @@ val close : file_descr -> unit Lwt.t
   (** Close a {b file descriptor}. This close the underlying unix {b
       file descriptor} and set its state to {!Closed} *)
 
-val read : file_descr -> Bytes.t -> int -> int -> int Lwt.t
+val read : file_descr -> bytes -> int -> int -> int Lwt.t
 (** [read fd buf ofs len] reads up to [len] bytes from [fd], and writes them to
     [buf], starting at offset [ofs]. The function immediately evaluates to an
     Lwt thread, which waits for the operation to complete. If it completes
@@ -364,7 +367,7 @@ val read : file_descr -> Bytes.t -> int -> int -> int Lwt.t
     except [Unix.Unix_error Unix.EAGAIN], [Unix.Unix_error Unix.EWOULDBLOCK] or
     [Unix.Unix_error Unix.EINTR]. *)
 
-val write : file_descr -> Bytes.t -> int -> int -> int Lwt.t
+val write : file_descr -> bytes -> int -> int -> int Lwt.t
 (** [write fd buf ofs len] writes up to [len] bytes to [fd] from [buf], starting
     at buffer offset [ofs]. The function immediately evaluates to an Lwt thread,
     which waits for the operation to complete. If the operation completes
@@ -383,6 +386,108 @@ val write : file_descr -> Bytes.t -> int -> int -> int Lwt.t
 
 val write_string : file_descr -> string -> int -> int -> int Lwt.t
   (** See {!write}. *)
+
+(** Sequences of buffer slices for {!writev}. *)
+module IO_vectors :
+sig
+  type t
+  (** Mutable sequences of I/O vectors. An I/O vector describes a slice of a
+      [bytes] or [Bigarray] buffer. Each I/O vector is a triple containing a
+      reference to the buffer, an offset into the buffer where the slice begins,
+      and the length of the slice. *)
+
+  type _bigarray =
+    (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+  (** Type abbreviation equivalent to {!Lwt_bytes.t}. Do not use this type name
+      directly; use {!Lwt_bytes.t} instead. *)
+
+  val create : unit -> t
+  (** Creates an empty I/O vector sequence. *)
+
+  val append_bytes : t -> bytes -> int -> int -> unit
+  (** [append_bytes vs buffer offset length] appends a slice of the [bytes]
+      buffer [buffer] beginning at [offset] and with length [length] to the
+      I/O vector sequence [vs]. *)
+
+  val append_bigarray : t -> _bigarray -> int -> int -> unit
+  (** [append_bigarray vs buffer offset length] appends a slice of the
+      [Bigarray] buffer [buffer] beginning at [offset] and with length [length]
+      to the I/O vector sequence [vs]. *)
+
+  val drop : t -> int -> unit
+  (** [drop vs n] adjusts the I/O vector sequence [vs] so that it no longer
+      includes its first [n] bytes. *)
+
+  val is_empty : t -> bool
+  (** [is_empty vs] is [true] if and only if [vs] has no I/O vectors, or all I/O
+      vectors in [vs] have zero bytes. *)
+
+  val system_limit : int option
+  (** Some systems limit the number of I/O vectors that can be passed in a
+      single call to their [writev] or [readv] system calls. On those systems,
+      if the limit is [n], this value is equal to [Some n]. On systems without
+      such a limit, the value is equal to [None].
+
+      Unless you need atomic I/O operations, you can ignore this limit. The Lwt
+      binding automatically respects it internally. See {!Lwt_unix.writev}.
+
+      A typical limit is 1024 vectors. *)
+end
+
+val readv : file_descr -> IO_vectors.t -> int Lwt.t
+(** [readv fd vs] reads bytes from [fd] into the buffer slices [vs]. If the
+    operation completes successfully, the resulting thread indicates the number
+    of bytes read.
+
+    Data is always read directly into [Bigarray] slices. If the Unix file
+    descriptor underlying [fd] is in non-blocking mode, data is also read
+    directly into [bytes] slices. Otherwise, data for [bytes] slices is first
+    read into temporary buffers, then copied.
+
+    Note that the returned Lwt thread is blocked until failure or a successful
+    read, even if the underlying file descriptor is in non-blocking mode. See
+    {!of_unix_file_descr} for a discussion of non-blocking I/O and Lwt.
+
+    If {!IO_vectors.system_limit} is [Some n] and the count of slices in [vs]
+    exceeds [n], then [Lwt_unix.readv] reads only into the first [n] slices of
+    [vs].
+
+    Not implemented on Windows. It should be possible to implement, upon
+    request, for Windows sockets only.
+
+    See {{:http://man7.org/linux/man-pages/man3/readv.3p.html} [readv(3p)]}.
+
+    @since 2.7.0 *)
+
+val writev : file_descr -> IO_vectors.t -> int Lwt.t
+(** [writev fd vs] writes the bytes in the buffer slices [vs] to the file
+    descriptor [fd]. If the operation completes successfully, the resulting
+    thread indicates the number of bytes written.
+
+    If the Unix file descriptor underlying [fd] is in non-blocking mode,
+    [writev] does not make a copy the bytes before writing. Otherwise, it copies
+    [bytes] slices, but not [Bigarray] slices.
+
+    Note that the returned Lwt thread is blocked until failure or a successful
+    write, even if the underlying descriptor is in non-blocking mode. See
+    {!of_unix_file_descr} for a discussion of non-blocking I/O and Lwt.
+
+    If {!IO_vectors.system_limit} is [Some n] and the count of slices in [vs]
+    exceeds [n], then [Lwt_unix.writev] passes only the first [n] slices in [vs]
+    to the underlying [writev] system call.
+
+    Not implemented on Windows. It should be possible to implement, upon
+    request, for Windows sockets only.
+
+    The behavior of [writev] when [vs] has zero slices depends on the system,
+    and may change in future versions of Lwt. On Linux, [writev] will succeed
+    and write zero bytes. On BSD (including macOS), [writev] will fail with
+    [Unix.Unix_error (Unix.EINVAL, "writev", ...)].
+
+    See {{:http://man7.org/linux/man-pages/man3/writev.3p.html}
+    [writev(3p)]}.
+
+    @since 2.7.0 *)
 
 val readable : file_descr -> bool
   (** Returns whether the given file descriptor is currently
@@ -427,7 +532,7 @@ val fdatasync : file_descr -> unit Lwt.t
   (** Synchronise all data (but not metadata) of the file descriptor
       with the disk.
 
-      Note that [fdatasync] is not available on Windows. *)
+      Note that [fdatasync] is not available on Windows and OS X. *)
 
 (** {2 File status} *)
 
@@ -468,7 +573,19 @@ val fstat : file_descr -> stats Lwt.t
   (** Wrapper for [Unix.fstat] *)
 
 val file_exists : string -> bool Lwt.t
-  (** [file_exists name] tests if a file named [name] exists. *)
+  (** [file_exists name] tests if a file named [name] exists.
+
+      Note that [file_exists] behaves similarly to
+      {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Sys.html#VALfile_exists}
+      [Sys.file_exists]}:
+
+      - "file" is interpreted as "directory entry" in this context
+
+      - [file_exists name] will return [false] in
+        circumstances that would make {!stat} raise a
+        {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#EXCEPTIONUnix_error}
+        [Unix.Unix_error]} exception.
+     *)
 
 val utimes : string -> float -> float -> unit Lwt.t
 (** [utimes path atime mtime] updates the access and modification times of the
@@ -524,7 +641,19 @@ module LargeFile : sig
     (** Wrapper for [Unix.LargeFile.fstat] *)
 
   val file_exists : string -> bool Lwt.t
-    (** [file_exists name] tests if a file named [name] exists. *)
+    (** [file_exists name] tests if a file named [name] exists.
+
+        Note that [file_exists] behaves similarly to
+        {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Sys.html#VALfile_exists}
+        [Sys.file_exists]}:
+
+        - "file" is interpreted as "directory entry" in this context
+
+        - [file_exists name] will return [false] in
+          circumstances that would make {!stat} raise a
+          {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#EXCEPTIONUnix_error}
+          [Unix.Unix_error]} exception.
+     *)
 end
 
 (** {2 Operations on file names} *)
@@ -593,23 +722,35 @@ val chroot : string -> unit Lwt.t
 type dir_handle = Unix.dir_handle
 
 val opendir : string -> dir_handle Lwt.t
-  (** Wrapper for [Unix.opendir] *)
+(** Opens a directory for listing. Directories opened with this function must be
+    explicitly closed with {!closedir}. This is a cooperative analog of
+    {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#VALopendir}
+    [Unix.opendir]}. *)
 
 val readdir : dir_handle -> string Lwt.t
-  (** Wrapper for [Unix.readdir]. *)
+(** Reads the next directory entry from the given directory. Special entries
+    such as [.] and [..] are included. If all entries have been read, raises
+    [End_of_file]. This is a cooperative analog of
+    {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#VALreaddir}
+    [Unix.readdir]}. *)
 
 val readdir_n : dir_handle -> int -> string array Lwt.t
-  (** [readdir_n handle count] reads at most [count] entry from the
+  (** [readdir_n handle count] reads at most [count] entries from the
       given directory. It is more efficient than calling [readdir]
       [count] times. If the length of the returned array is smaller
       than [count], this means that the end of the directory has been
       reached. *)
 
 val rewinddir : dir_handle -> unit Lwt.t
-  (** Wrapper for [Unix.rewinddir] *)
+(** Resets the given directory handle, so that directory listing can be
+    restarted. Cooperative analog of
+    {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#VALrewinddir}
+    [Unix.rewinddir]}. *)
 
 val closedir : dir_handle -> unit Lwt.t
-  (** Wrapper for [Unix.closedir] *)
+(** Closes a directory handle. Cooperative analog of
+    {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#VALclosedir}
+    [Unix.closedir]}. *)
 
 val files_of_directory : string -> string Lwt_stream.t
   (** [files_of_directory dir] returns the stream of all files of
@@ -747,8 +888,13 @@ val socket : socket_domain -> socket_type -> int -> file_descr
 val socketpair : socket_domain -> socket_type -> int -> file_descr * file_descr
   (** Wrapper for [Unix.socketpair] *)
 
-val bind : file_descr -> sockaddr -> unit
-  (** Wrapper for [Unix.bind] *)
+val bind : file_descr -> sockaddr -> unit Lwt.t
+(** Binds an address to the given socket. This is the cooperative analog of
+    {{:http://caml.inria.fr/pub/docs/manual-ocaml/libref/Unix.html#VALbind}
+    [Unix.bind]}. See also
+    {{:http://man7.org/linux/man-pages/man3/bind.3p.html} [bind(3p)]}.
+
+    @since 3.0.0 *)
 
 val listen : file_descr -> int -> unit
   (** Wrapper for [Unix.listen] *)
@@ -800,24 +946,24 @@ type msg_flag =
   | MSG_DONTROUTE
   | MSG_PEEK
 
-val recv : file_descr -> Bytes.t -> int -> int -> msg_flag list -> int Lwt.t
+val recv : file_descr -> bytes -> int -> int -> msg_flag list -> int Lwt.t
 (** Wrapper for [Unix.recv].
 
     On Windows, [recv] writes data into a temporary buffer, then copies it into
     the given one. *)
 
-val recvfrom : file_descr -> Bytes.t -> int -> int -> msg_flag list -> (int * sockaddr) Lwt.t
+val recvfrom : file_descr -> bytes -> int -> int -> msg_flag list -> (int * sockaddr) Lwt.t
 (** Wrapper for [Unix.recvfrom].
 
     On Windows, [recvfrom] writes data into a temporary buffer, then copies it
     into the given one. *)
 
-val send : file_descr -> Bytes.t -> int -> int -> msg_flag list -> int Lwt.t
+val send : file_descr -> bytes -> int -> int -> msg_flag list -> int Lwt.t
 (** Wrapper for [Unix.send].
 
     On Windows, [send] copies the given buffer before writing. *)
 
-val sendto : file_descr -> Bytes.t -> int -> int -> msg_flag list -> sockaddr -> int Lwt.t
+val sendto : file_descr -> bytes -> int -> int -> msg_flag list -> sockaddr -> int Lwt.t
 (** Wrapper for [Unix.sendto].
 
     On Windows, [sendto] copies the given buffer before writing. *)
@@ -1199,6 +1345,7 @@ val execute_job :
   job : 'a job ->
   result : ('a job -> 'b) ->
   free : ('a job -> unit) -> 'b Lwt.t
+  [@@ocaml.deprecated " Use Lwt_unix.run_job."]
   (** @deprecated Use [run_job]. *)
 
 (** {2 Notifications} *)
@@ -1267,10 +1414,37 @@ val set_affinity : ?pid : int -> int list -> unit
   (** [set_affinity ?pid cpus] sets the list of CPUs the given process
       is allowed to run on. *)
 
+(** {2 Versioned interfaces} *)
+
+(** Versioned variants of APIs undergoing breaking changes. *)
+module Versioned :
+sig
+  val bind_1 : file_descr -> sockaddr -> unit
+    [@@ocaml.deprecated
+" Deprecated in favor of Lwt_unix.bind. See
+   https://github.com/ocsigen/lwt/issues/230"]
+  (** Old version of {!Lwt_unix.bind}. The current {!Lwt_unix.bind} evaluates to
+      a promise, because the internal [bind(2)] system call can block if the
+      given socket is a Unix domain socket.
+
+      @deprecated Use {!Lwt_unix.bind}.
+      @since 2.7.0 *)
+
+  val bind_2 : file_descr -> sockaddr -> unit Lwt.t
+    [@@ocaml.deprecated
+" In Lwt >= 3.0.0, this is an alias for Lwt_unix.bind."]
+  (** Since Lwt 3.0.0, this is just an alias for {!Lwt_unix.bind}.
+
+      @deprecated Use {!Lwt_unix.bind}.
+      @since 2.7.0 *)
+end
+
 (**/**)
 
 val run : 'a Lwt.t -> 'a
+  [@@ocaml.deprecated " Use Lwt_main.run."]
   (** @deprecated Use [Lwt_main.run]. *)
 
 val has_wait4 : bool
+  [@@ocaml.deprecated " Use Lwt_sys.have `wait4."]
   (** @deprecated Use [Lwt_sys.have `wait4]. *)
