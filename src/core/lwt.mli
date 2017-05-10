@@ -286,7 +286,7 @@ val async_exception_hook : (exn -> unit) ref
 type 'a u
   (** The type of thread wakeners. *)
 
-val wait : unit -> 'a t * 'a u
+val wait : ?thread_type:Lwt_tracing.thread_type -> unit -> 'a t * 'a u
   (** [wait ()] is a pair of a thread which sleeps forever (unless it
       is resumed by one of the functions [wakeup], [wakeup_exn] below)
       and the corresponding wakener.  This thread does not block the
@@ -376,7 +376,7 @@ val on_cancel : 'a t -> (unit -> unit) -> unit
       If [f] raises an exception it is given to
       {!async_exception_hook}. *)
 
-val add_task_r : 'a u Lwt_sequence.t -> 'a t
+val add_task_r : ?thread_type:Lwt_tracing.thread_type -> 'a u Lwt_sequence.t -> 'a t
   (** [add_task_r seq] creates a sleeping thread, adds its wakener to
       the right of [seq] and returns its waiter. When the thread is
       canceled, it is removed from [seq]. *)
@@ -519,3 +519,10 @@ val backtrace_try_bind : (exn -> exn) -> (unit -> 'a t) -> ('a -> 'b t) -> (exn 
 val backtrace_finalize : (exn -> exn) -> (unit -> 'a t) -> (unit -> unit t) -> 'a t
 
 val abandon_wakeups : unit -> unit
+
+val id_of_thread : 'a t -> Lwt_tracing.thread_id
+val current_id : unit -> Lwt_tracing.thread_id
+
+val as_thread : Lwt_tracing.thread_id -> signal:bool -> (unit -> 'a) -> 'a
+(** Change the tracing context temporarily to another thread.
+    If [signal] is [true], a signal from the previous thread to the new one is reported. *)

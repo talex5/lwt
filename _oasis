@@ -104,6 +104,13 @@ Flag coverage
 # | Libraries                                                         |
 # +-------------------------------------------------------------------+
 
+Library "lwt-tracing"
+  FindlibName: tracing
+  FindlibParent: lwt
+  Path: src/tracing
+  Modules: Lwt_tracing
+  XMETADescription: Tracing support
+
 Library "lwt"
   Path: src/core
   Modules:
@@ -118,7 +125,7 @@ Library "lwt"
     Lwt_stream,
     Lwt_switch,
     Lwt_pqueue
-  BuildDepends: bytes, result
+  BuildDepends: bytes, lwt.tracing, result
   XMETADescription: Lightweight thread library for OCaml (core library)
 
 Library "lwt-log"

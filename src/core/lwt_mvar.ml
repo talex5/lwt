@@ -30,6 +30,8 @@
  ******************************************************************************)
 
 type 'a t = {
+  label : string option;
+
   mutable mvar_contents : 'a option;
   (* Current contents *)
 
@@ -40,13 +42,15 @@ type 'a t = {
   (* Threads waiting for a value *)
 }
 
-let create_empty () =
-  { mvar_contents = None;
+let create_empty ?label () =
+  { label;
+    mvar_contents = None;
     writers = Lwt_sequence.create ();
     readers = Lwt_sequence.create () }
 
-let create v =
-  { mvar_contents = Some v;
+let create ?label v =
+  { label;
+    mvar_contents = Some v;
     writers = Lwt_sequence.create ();
     readers = Lwt_sequence.create () }
 
@@ -62,6 +66,9 @@ let put mvar v =
         Lwt.return_unit
     | Some _ ->
         let (res, w) = Lwt.task () in
+        begin match mvar.label with
+        | None -> ()
+        | Some label -> Lwt_tracing.(!tracer.note_label) (Lwt.id_of_thread res) ("put " ^ label) end;
         let node = Lwt_sequence.add_r (v, w) mvar.writers in
         Lwt.on_cancel res (fun _ -> Lwt_sequence.remove node);
         res
@@ -78,4 +85,8 @@ let take mvar =
         end;
         Lwt.return v
     | None ->
-        Lwt.add_task_r mvar.readers
+        let task = Lwt.add_task_r mvar.readers in
+        begin match mvar.label with
+        | None -> ()
+        | Some label -> Lwt_tracing.(!tracer.note_label) (Lwt.id_of_thread task) ("take " ^ label) end;
+        task
